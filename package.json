@@ -1,21 +1,34 @@
 {
   "name": "koishi-plugin-mcl-grouptool",
-  "description": "个人自用",
-  "version": "0.0.1",
+  "description": "MC 群组助手（自用）",
+  "version": "0.0.2",
+  "contributors": [
+    "Yis_Rime <yis_rime@outlook.com>"
+  ],
+  "homepage": "https://github.com/YisRime/koishi-plugin-mcl-grouptool",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YisRime/koishi-plugin-mcl-grouptool.git"
+  },
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
     "lib",
     "dist"
   ],
-  "license": "MIT",
-  "scripts": {},
+  "license": "AGPL-3.0-only",
   "keywords": [
     "chatbot",
     "koishi",
-    "plugin"
+    "plugin",
+    "mc",
+    "launcher",
+    "group"
   ],
-  "devDependencies": {},
+  "devDependencies": {
+    "koishi-plugin-adapter-onebot": "^6.8.0",
+    "koishi-plugin-puppeteer": "^3.5.2"
+  },
   "peerDependencies": {
     "koishi": "4.18.8"
   }
