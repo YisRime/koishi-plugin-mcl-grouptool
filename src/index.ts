@@ -1,4 +1,5 @@
 import { Context, Schema, h } from 'koishi'
+import {} from 'koishi-plugin-adapter-onebot'
 
 export const name = 'mcl-grouptool'
 
@@ -201,10 +202,28 @@ async function handleImageForward(session: any, elements: any[] | undefined, con
     h('text', { content: sourceInfo }),
     h('img', { src: imageElement.attrs.src })
   ])
+  // 转发图片
   if (config.forwardType === 'group') {
     await session.bot.sendMessage(config.forwardTarget, forwardMsg)
   } else {
     await session.bot.sendPrivateMessage(config.forwardTarget, forwardMsg)
+  }
+  // 进行OCR识别
+  const ocrResult = await session.bot.internal.ocrImage({
+    image: imageElement.attrs.src
+  })
+  if (ocrResult?.data && ocrResult.data.length > 0) {
+    const extractedTexts = ocrResult.data.map(item => item.text).filter(text => text.trim())
+    if (extractedTexts.length > 0) {
+      const ocrMsg = h('message', [
+        h('text', { content: `OCR识别结果：\n${extractedTexts.join('\n')}` })
+      ])
+      if (config.forwardType === 'group') {
+        await session.bot.sendMessage(config.forwardTarget, ocrMsg)
+      } else {
+        await session.bot.sendPrivateMessage(config.forwardTarget, ocrMsg)
+      }
+    }
   }
 }
 
