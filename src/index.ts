@@ -4,70 +4,63 @@ export const name = 'mcl-grouptool'
 
 export interface Config {
   preventDuplicate?: boolean
+  hmclGroups?: string[]
+  pclGroups?: string[]
+  bakaxlGroups?: string[]
 }
 
 export const Config: Schema<Config> = Schema.object({
-  preventDuplicate: Schema.boolean().default(true).description('防止重复发送')
+  preventDuplicate: Schema.boolean().default(true).description('防止重复发送'),
+  hmclGroups: Schema.array(Schema.string()).default(['633640264', '203232161', '201034984', '533529045', '744304553', '282845310', '482624681', '991620626', '657677715', '775084843']).description('HMCL群列表'),
+  pclGroups: Schema.array(Schema.string()).default(['1028074835']).description('PCL群列表'),
+  bakaxlGroups: Schema.array(Schema.string()).default(['480455628', '377521448']).description('BakaXL群列表')
 })
 
 export function apply(ctx: Context, config: Config) {
-  const GROUP_CONFIGS = {
-    '666546887': {
-      pattern: /minecraft-exported-crash-info-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.zip$/i,
-      message: '这里是 HMCL 用户群，如果遇到游戏崩溃问题加这个群：666546887'
+  const patterns = [
+    {
+      name: 'hmcl',groupId: '666546887', groups: config.hmclGroups,
+      pattern: /minecraft-exported-crash-info-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.zip$/i
     },
-    '978054335': {
-      pattern: /错误报告-\d{4}-\d{1,2}-\d{1,2}_\d{2}\.\d{2}\.\d{2}\.zip$/i,
-      message: '本群不解决其他启动器的报错问题，PCL 的游戏崩溃问题加这个群：978054335'
+    {
+      name: 'pcl',groupId: '978054335', groups: config.pclGroups,
+      pattern: /错误报告-\d{4}-\d{1,2}-\d{1,2}_\d{2}\.\d{2}\.\d{2}\.zip$/i
+    },
+    {
+      name: 'bakaxl',groupId: '377521448', groups: config.bakaxlGroups,
+      pattern: /BakaXL-ErrorCan-\d{14}\.json$/i
     }
-  };
-  // 存储待发送的消息队列
-  const pendingMessages = new Map<string, { messages: Set<string>, timeout: NodeJS.Timeout }>();
-  // 检测文件名并返回匹配的群号
-  function detectGroupFromFile(fileName: string): string | null {
-    for (const [groupNumber, config] of Object.entries(GROUP_CONFIGS)) if (config.pattern.test(fileName)) return groupNumber;
-    return null;
-  }
-  // 处理延迟发送逻辑
-  function handleDelayedSend(channelKey: string, groupNumber: string, session: any) {
-    // 清除已有定时器或创建新队列
-    if (pendingMessages.has(channelKey)) {
-      clearTimeout(pendingMessages.get(channelKey)!.timeout);
-    } else {
-      pendingMessages.set(channelKey, { messages: new Set(), timeout: null as any });
-    }
-    const queue = pendingMessages.get(channelKey)!;
-    queue.messages.add(groupNumber);
-    // 设置3秒延迟发送
-    queue.timeout = setTimeout(async () => {
-      for (const gNumber of queue.messages) await session.send(GROUP_CONFIGS[gNumber].message);
-      pendingMessages.delete(channelKey);
-    }, 3000);
-  }
-
-  // 监听消息事件
+  ];
+  const pendingMessages = new Map<string, NodeJS.Timeout>();
   ctx.on('message', async (session) => {
-    // 处理文件检测
-    if (session.elements) {
-      for (const element of session.elements) {
-        if (element.type === 'file') {
-          const fileName = element.attrs?.name || element.attrs?.filename || '';
-          const groupNumber = detectGroupFromFile(fileName);
-          if (groupNumber) {
-            if (config.preventDuplicate) {
-              handleDelayedSend(session.channelId, groupNumber, session);
-            } else {
-              await session.send(GROUP_CONFIGS[groupNumber].message);
-            }
-          }
-        }
+    const { channelId, elements, content } = session;
+    const currentGroup = patterns.find(p => p.groups.includes(channelId));
+    if (!currentGroup) return;
+    // 处理文件上传
+    const fileElement = elements?.find(el => el.type === 'file');
+    if (fileElement) {
+      const matchedPattern = patterns.find(p => p.pattern.test(fileElement.attrs.file));
+      if (!matchedPattern) return;
+      const isCorrectGroup = matchedPattern.name === currentGroup.name;
+      const message = `${isCorrectGroup ? '这里是' : '本群不解决其他启动器的报错问题，'} ${matchedPattern.name.toUpperCase()} ${isCorrectGroup ? '用户群，如果遇到' : '的'}游戏崩溃问题加这个群：${matchedPattern.groupId}`;
+      if (config.preventDuplicate) {
+        const pending = pendingMessages.get(channelId);
+        if (pending) clearTimeout(pending);
+        pendingMessages.set(channelId, setTimeout(async () => {
+          await session.send(message);
+          pendingMessages.delete(channelId);
+        }, 3000));
+      } else {
+        await session.send(message);
       }
     }
-    // 处理防重复检测
-    if (config.preventDuplicate && session.content && pendingMessages.has(session.channelId)) {
-      const groupNumbers = pendingMessages.get(session.channelId)!.messages;
-      // 检查消息中是否包含群号，如果包含则从待发送队列中移除
-      for (const groupNumber of Object.keys(GROUP_CONFIGS)) if (session.content.includes(groupNumber)) groupNumbers.delete(groupNumber);
+    // 防重复检测 - 如果消息包含群号则取消发送
+    if (config.preventDuplicate && content && pendingMessages.has(channelId)) {
+      const shouldCancel = patterns.some(p => content.includes(p.groupId));
+      if (shouldCancel) {
+        clearTimeout(pendingMessages.get(channelId)!);
+        pendingMessages.delete(channelId);
+      }
     }
   });
 }
