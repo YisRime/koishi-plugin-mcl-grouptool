@@ -73,13 +73,17 @@ interface Keyword {
  * @property {boolean} [mention] - 回复时是否@用户
  * @property {boolean} [quote] - 回复时是否引用消息
  * @property {Keyword[]} [keywords] - 关键词回复配置列表
+ * @property {'group' | 'user'} [forwardType] - 图片转发类型
+ * @property {string} [forwardTarget] - 图片转发目标ID
  */
 export interface Config {
-  readonly whitelist?: string[]
-  readonly preventDup?: boolean
-  readonly mention?: boolean
-  readonly quote?: boolean
-  readonly keywords?: Keyword[]
+  whitelist?: string[]
+  preventDup?: boolean
+  mention?: boolean
+  quote?: boolean
+  keywords?: Keyword[]
+  forwardType?: 'group' | 'user'
+  forwardTarget?: string
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -87,17 +91,19 @@ export const Config: Schema<Config> = Schema.intersect([
     preventDup: Schema.boolean().default(true).description('延迟发送提示'),
     quote: Schema.boolean().default(true).description('回复时引用消息'),
     mention: Schema.boolean().default(false).description('回复时@用户')
-  }).description('回复配置'),
+  }).description('自动回复配置'),
   Schema.object({
-    whitelist: Schema.array(Schema.string()).description('用户白名单')
-  }).description('用户权限配置'),
-  Schema.object({
+    whitelist: Schema.array(Schema.string()).description('用户白名单'),
     keywords: Schema.array(Schema.object({
       keyword: Schema.string().description('关键词'),
       reply: Schema.string().description('回复内容'),
       regex: Schema.string().description('正则表达式')
-    })).description('关键词回复配置').role('table')
-  }).description('关键词配置')
+    })).description('关键词配置').role('table')
+  }).description('关键词回复配置'),
+  Schema.object({
+    forwardType: Schema.union(['group', 'user']).description('转发类型').default('user'),
+    forwardTarget: Schema.string().description('转发目标ID')
+  }).description('转发配置')
 ])
 
 /**
@@ -128,7 +134,7 @@ export function apply(ctx: Context, config: Config) {
     return m ? m[1] : null;
   }
 
-  ctx.command('send <keyword> [target]', '发送关键词回复')
+  ctx.command('send <keyword> [target]', '发送预设回复')
     .action(async ({ session }, keyword, target) => {
       if (config.whitelist && !config.whitelist.includes(session.userId)) return
       if (!keyword) return '请提供关键词'
@@ -143,6 +149,7 @@ export function apply(ctx: Context, config: Config) {
     const launcher = getLauncher(channelId)
     if (!launcher) return
     if (await handleKeyword(session, content, config.keywords, config)) return
+    await handleImageForward(session, elements, config)
     await handleFile(session, elements, launcher, config, pending)
     handleDupCheck(content, channelId, config.preventDup, pending)
   })
@@ -177,6 +184,28 @@ async function handleKeyword(session: any, content: string | undefined, keywords
     }
   }
   return false
+}
+
+/**
+ * 处理图片转发
+ * @param {any} session - 会话对象
+ * @param {any[] | undefined} elements - 消息元素数组
+ * @param {Config} config - 插件配置
+ */
+async function handleImageForward(session: any, elements: any[] | undefined, config: Config): Promise<void> {
+  if (!config.forwardType || !config.forwardTarget || !elements) return
+  const imageElement = elements.find(el => el.type === 'img')
+  if (!imageElement) return
+  const sourceInfo = `${session.author.nickname || session.userId}（${session.guildId || session.channelId}）发送图片：`
+  const forwardMsg = h('message', [
+    h('text', { content: sourceInfo }),
+    h('img', { src: imageElement.attrs.src })
+  ])
+  if (config.forwardType === 'group') {
+    await session.bot.sendMessage(config.forwardTarget, forwardMsg)
+  } else {
+    await session.bot.sendPrivateMessage(config.forwardTarget, forwardMsg)
+  }
 }
 
 /**
