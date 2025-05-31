@@ -342,15 +342,15 @@ function handleDupCheck(content: string | undefined, channelId: string, preventD
  * @returns {Promise<void>}
  */
 async function sendMsg(session: any, msg: string, config: Config, targetUserId?: string | null): Promise<void> {
-  let final = msg
+  let elements = []
+  if (config.quote && session.messageId) elements.push(h('quote', { id: session.messageId }))
   if (targetUserId) {
-    final = `<at id="${targetUserId}"/> ${final}`
+    elements.push(h('at', { id: targetUserId }))
+    elements.push(h('text', { content: ' ' }))
   } else if (config.mention) {
-    final = `<at id="${session.userId}"/> ${final}`
+    elements.push(h('at', { id: session.userId }))
+    elements.push(h('text', { content: ' ' }))
   }
-  if (config.quote) {
-    await session.send(final, { reply: true })
-  } else {
-    await session.send(final)
-  }
+  elements.push(h('text', { content: msg }))
+  await session.send(elements)
 }

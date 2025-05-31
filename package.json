@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-mcl-grouptool",
   "description": "MC 启动器群助手（自用）",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "contributors": [
     "Yis_Rime <yis_rime@outlook.com>"
   ],
