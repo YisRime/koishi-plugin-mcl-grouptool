@@ -74,8 +74,10 @@ interface Keyword {
  * @property {boolean} [mention] - 回复时是否@用户
  * @property {boolean} [quote] - 回复时是否引用消息
  * @property {Keyword[]} [keywords] - 关键词回复配置列表
+ * @property {boolean} [enableImageForward] - 是否启用图片转发
  * @property {'group' | 'user'} [forwardType] - 图片转发类型
  * @property {string} [forwardTarget] - 图片转发目标ID
+ * @property {boolean} [enableOCR] - 是否启用OCR识别
  */
 export interface Config {
   whitelist?: string[]
@@ -83,8 +85,10 @@ export interface Config {
   mention?: boolean
   quote?: boolean
   keywords?: Keyword[]
+  enableImageForward?: boolean
   forwardType?: 'group' | 'user'
   forwardTarget?: string
+  enableOCR?: boolean
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -102,9 +106,11 @@ export const Config: Schema<Config> = Schema.intersect([
     })).description('关键词配置').role('table')
   }).description('关键词回复配置'),
   Schema.object({
+    enableImageForward: Schema.boolean().default(false).description('启用图片转发'),
     forwardType: Schema.union(['group', 'user']).description('转发类型').default('user'),
-    forwardTarget: Schema.string().description('转发目标ID')
-  }).description('转发配置')
+    forwardTarget: Schema.string().description('转发目标ID'),
+    enableOCR: Schema.boolean().default(false).description('启用OCR识别')
+  }).description('图片转发配置')
 ])
 
 /**
@@ -194,36 +200,54 @@ async function handleKeyword(session: any, content: string | undefined, keywords
  * @param {Config} config - 插件配置
  */
 async function handleImageForward(session: any, elements: any[] | undefined, config: Config): Promise<void> {
-  if (!config.forwardType || !config.forwardTarget || !elements) return
+  if (!config.enableImageForward || !config.forwardTarget || !elements) return
+
   const imageElement = elements.find(el => el.type === 'img')
   if (!imageElement) return
+
   const sourceInfo = `${session.author.nickname || session.userId}（${session.guildId || session.channelId}）发送图片：`
   const forwardMsg = h('message', [
     h('text', { content: sourceInfo }),
     h('img', { src: imageElement.attrs.src })
   ])
-  // 转发图片
-  if (config.forwardType === 'group') {
-    await session.bot.sendMessage(config.forwardTarget, forwardMsg)
-  } else {
-    await session.bot.sendPrivateMessage(config.forwardTarget, forwardMsg)
-  }
-  // 进行OCR识别
-  const ocrResult = await session.bot.internal.ocrImage({
-    image: imageElement.attrs.src
-  })
-  if (ocrResult?.data && ocrResult.data.length > 0) {
-    const extractedTexts = ocrResult.data.map(item => item.text).filter(text => text.trim())
-    if (extractedTexts.length > 0) {
-      const ocrMsg = h('message', [
-        h('text', { content: `OCR识别结果：\n${extractedTexts.join('\n')}` })
-      ])
-      if (config.forwardType === 'group') {
-        await session.bot.sendMessage(config.forwardTarget, ocrMsg)
-      } else {
-        await session.bot.sendPrivateMessage(config.forwardTarget, ocrMsg)
+
+  try {
+    // 转发图片
+    if (config.forwardType === 'group') {
+      await session.bot.sendMessage(config.forwardTarget, forwardMsg)
+    } else {
+      await session.bot.sendPrivateMessage(config.forwardTarget, forwardMsg)
+    }
+
+    // 进行OCR识别
+    if (config.enableOCR) {
+      try {
+        // 根据API文档，正确的调用方式
+        const ocrResult = await session.bot.internal.ocrImage({
+          image: imageElement.attrs.src
+        })
+
+        // 检查OCR响应格式
+        if (ocrResult?.status === 'ok' && ocrResult?.retcode === 0 && ocrResult?.data && Array.isArray(ocrResult.data) && ocrResult.data.length > 0) {
+          const extractedTexts = ocrResult.data.map(item => item.text).filter(text => text && text.trim())
+          if (extractedTexts.length > 0) {
+            const ocrMsg = h('message', [
+              h('text', { content: `OCR识别结果：\n${extractedTexts.join('\n')}` })
+            ])
+            if (config.forwardType === 'group') {
+              await session.bot.sendMessage(config.forwardTarget, ocrMsg)
+            } else {
+              await session.bot.sendPrivateMessage(config.forwardTarget, ocrMsg)
+            }
+          }
+        }
+      } catch (ocrError) {
+        // OCR失败时静默处理，不影响图片转发功能
+        console.warn('OCR识别失败:', ocrError.message || ocrError)
       }
     }
+  } catch (error) {
+    console.error('图片转发失败:', error.message)
   }
 }
 
