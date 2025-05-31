@@ -18,7 +18,8 @@ export const usage = `
 `
 
 /**
- * 启动器配置信息
+ * 启动器配置定义
+ * @description 包含各启动器的群组ID、对应群组列表和文件名匹配模式
  */
 const LAUNCHER_CONFIGS = {
   hmcl: {
@@ -36,93 +37,87 @@ const LAUNCHER_CONFIGS = {
     groups: ['480455628', '377521448'],
     pattern: /BakaXL-ErrorCan-\d{14}\.json$/i
   }
-}
+} as const
 
-/**
- * 启动器名称类型
- */
+/** 启动器名称类型 */
 type LauncherName = keyof typeof LAUNCHER_CONFIGS
 
 /**
  * 关键词配置接口
+ * @interface KeywordConfig
+ * @property {string} regex - 正则表达式
+ * @property {string} reply - 回复内容
  */
-interface Keyword {
-  /** 关键词文本 */
-  keyword: string
-  /** 回复内容 */
+interface KeywordConfig {
+  regex: string
   reply: string
-  /** 可选的正则表达式 */
-  regex?: string
 }
 
 /**
  * 插件配置接口
+ * @interface Config
  */
 export interface Config {
-  /** 用户白名单 */
-  whitelist?: string[]
-  /** 是否启用重复发送防护 */
   preventDup?: boolean
-  /** 回复时是否@用户 */
   mention?: boolean
-  /** 回复时是否引用消息 */
   quote?: boolean
-  /** 关键词配置列表 */
-  keywords?: Keyword[]
-  /** 是否启用转发功能 */
+  fileReply?: boolean
+  keywordReply?: boolean
+  keywords?: KeywordConfig[]
+  ocrKeywords?: KeywordConfig[]
+  fwdKeywords?: { regex: string }[]
   enableForward?: boolean
-  /** 转发类型：群聊或私聊 */
-  forwardType?: 'group' | 'user'
-  /** 转发目标ID */
   forwardTarget?: string
-  /** 是否启用OCR识别 */
-  enableOCR?: boolean
+  cmdWhitelist?: string[]
+  ocrReply?: boolean
+  forwardOcr?: boolean
 }
 
+/** 插件配置 Schema */
 export const Config: Schema<Config> = Schema.intersect([
+  Schema.object({
+    ocrReply: Schema.boolean().default(false).description('启用图片识别'),
+    fileReply: Schema.boolean().default(true).description('启用文件识别'),
+    keywordReply: Schema.boolean().default(true).description('启用关键词回复'),
+    enableForward: Schema.boolean().default(false).description('启用消息转发'),
+    forwardOcr: Schema.boolean().default(false).description('转发图片识别内容'),
+    forwardTarget: Schema.string().description('转发目标群'),
+    cmdWhitelist: Schema.array(Schema.string()).description('命令操作白名单用户').role('table')
+  }).description('权限开关配置'),
   Schema.object({
     preventDup: Schema.boolean().default(true).description('延迟发送提示'),
     quote: Schema.boolean().default(true).description('回复时引用消息'),
     mention: Schema.boolean().default(false).description('回复时@用户')
   }).description('自动回复配置'),
   Schema.object({
-    enableForward: Schema.boolean().default(false).description('启用消息转发'),
-    enableOCR: Schema.boolean().default(false).description('启用OCR识别'),
-    forwardType: Schema.union(['group', 'user']).description('转发类型').default('user'),
-    forwardTarget: Schema.string().description('转发目标ID')
-  }).description('消息转发配置'),
-  Schema.object({
-    whitelist: Schema.array(Schema.string()).description('用户白名单'),
     keywords: Schema.array(Schema.object({
-      keyword: Schema.string().description('关键词'),
-      reply: Schema.string().description('回复内容'),
+      regex: Schema.string().description('正则表达式'),
+      reply: Schema.string().description('回复内容')
+    })).description('回复关键词').role('table'),
+    ocrKeywords: Schema.array(Schema.object({
+      regex: Schema.string().description('正则表达式'),
+      reply: Schema.string().description('回复内容')
+    })).description('OCR 关键词').role('table'),
+    fwdKeywords: Schema.array(Schema.object({
       regex: Schema.string().description('正则表达式')
-    })).description('关键词配置').role('table')
-  }).description('关键词回复配置')
+    })).description('转发关键词').role('table')
+  }).description('关键词配置')
 ])
 
 /**
  * 插件主函数
- * @param ctx Koishi上下文
+ * @param ctx Koishi 上下文
  * @param config 插件配置
  */
 export function apply(ctx: Context, config: Config) {
   const pending = new Map<string, NodeJS.Timeout>()
 
   /**
-   * 检查用户是否在白名单中
-   * @param userId 用户ID
-   * @returns 如果用户在白名单中或未设置白名单则返回true
-   */
-  const isUserWhitelisted = (userId: string): boolean =>
-    !config.whitelist || config.whitelist.includes(userId)
-
-  /**
-   * 构建回复元素
+   * 构建回复消息元素
    * @param session 会话对象
    * @param content 回复内容
    * @param targetUserId 目标用户ID（可选）
-   * @returns 元素数组
+   * @returns 消息元素数组
    */
   const buildReplyElements = (session: any, content: string, targetUserId?: string) => {
     const elements = []
@@ -137,106 +132,29 @@ export function apply(ctx: Context, config: Config) {
   }
 
   /**
-   * 查找对应的启动器
-   * @param channelId 频道ID
-   * @returns 启动器名称或null
-   */
-  const findLauncher = (channelId: string): LauncherName | null => {
-    for (const [name, config] of Object.entries(LAUNCHER_CONFIGS)) if (config.groups.includes(channelId)) return name as LauncherName
-    return null
-  }
-
-  /**
-   * 查找匹配的启动器文件
-   * @param filename 文件名
-   * @returns 启动器名称或null
-   */
-  const findMatchedLauncher = (filename: string): LauncherName | null => {
-    for (const [name, config] of Object.entries(LAUNCHER_CONFIGS)) if (config.pattern.test(filename)) return name as LauncherName
-    return null
-  }
-
-  /**
-   * 监听消息事件，处理图片转发、启动器文件识别和关键词回复
-   */
-  ctx.on('message', async (session) => {
-    const { channelId, elements, content } = session
-    // 处理消息转发
-    if (config.enableForward && config.forwardTarget) await handleMessageForward(session, elements, content)
-    // 查找对应的启动器
-    const launcher = findLauncher(channelId)
-    if (!launcher) return
-    // 处理关键词回复
-    if (content && config.keywords) {
-      for (const kw of config.keywords) {
-        if (kw.regex && new RegExp(kw.regex, 'i').test(content)) {
-          await session.send(buildReplyElements(session, kw.reply))
-          return
-        }
-      }
-    }
-    // 处理文件识别
-    const file = elements?.find(el => el.type === 'file')
-    if (file) {
-      const matched = findMatchedLauncher(file.attrs.file)
-      if (matched) await handleLauncherFile(session, launcher, matched)
-    }
-    // 处理重复发送防护
-    if (config.preventDup && content && pending.has(channelId)) {
-      const shouldCancel = Object.values(LAUNCHER_CONFIGS).some(launcherConfig => content.includes(launcherConfig.groupId))
-      if (shouldCancel) {
-        const timer = pending.get(channelId)
-        if (timer) {
-          clearTimeout(timer)
-          pending.delete(channelId)
-        }
-      }
-    }
-  })
-
-  /**
-   * 处理消息转发
-   * @param session 会话对象
-   * @param elements 消息元素
+   * 检查关键词并发送回复
    * @param content 消息内容
+   * @param keywords 关键词配置
+   * @param session 会话对象
+   * @returns 是否找到匹配的关键词
    */
-  async function handleMessageForward(session: any, elements: any[], content: string) {
-    const sendForward = config.forwardType === 'group'
-      ? session.bot.sendMessage
-      : session.bot.sendPrivateMessage
-    // 处理图片OCR识别
-    const imageElement = elements?.find(el => el.type === 'img')
-    if (imageElement && config.enableOCR) {
-      try {
-        const ocrResult = await session.bot.internal.ocrImage(imageElement.attrs.src)
-        if (Array.isArray(ocrResult) && ocrResult.length > 0) {
-          const extractedTexts = ocrResult.map(item => item.text).filter(text => text?.trim())
-          if (extractedTexts.length > 0) {
-            const senderInfo = `${session.author.nickname || session.userId}（${session.guildId || session.channelId}）`
-            await sendForward.call(session.bot, config.forwardTarget, senderInfo)
-            await sendForward.call(session.bot, config.forwardTarget, `${extractedTexts.join('\n')}`)
-          }
-        }
-      } catch {}
+  const checkKeywords = async (content: string, keywords: KeywordConfig[], session: any) => {
+    for (const kw of keywords) {
+      if (kw.regex && new RegExp(kw.regex, 'i').test(content)) {
+        await session.send(buildReplyElements(session, kw.reply))
+        return true
+      }
     }
-    // 转发JSON格式消息
-    if (content) {
-      try {
-        JSON.parse(content)
-        const senderInfo = `${session.author.nickname || session.userId}（${session.guildId || session.channelId}）`
-        await sendForward.call(session.bot, config.forwardTarget, senderInfo)
-        await sendForward.call(session.bot, config.forwardTarget, content)
-      } catch {}
-    }
+    return false
   }
 
   /**
-   * 处理启动器文件识别
+   * 处理启动器文件检测和回复
    * @param session 会话对象
-   * @param launcher 当前启动器
-   * @param matched 匹配的启动器
+   * @param launcher 当前群对应的启动器
+   * @param matched 匹配到的启动器
    */
-  async function handleLauncherFile(session: any, launcher: LauncherName, matched: LauncherName) {
+  const handleLauncherFile = async (session: any, launcher: LauncherName, matched: LauncherName) => {
     const isCorrect = matched === launcher
     if (matched === 'bakaxl' && isCorrect) return
     const launcherConfig = LAUNCHER_CONFIGS[matched]
@@ -256,22 +174,95 @@ export function apply(ctx: Context, config: Config) {
   }
 
   /**
-   * 发送命令 - 发送预设关键词回复
+   * 检查用户是否在命令白名单中
+   * @param userId 用户ID
+   * @returns 是否在白名单中
    */
-  ctx.command('send <keyword> [target]', '发送预设回复')
+  const isUserWhitelisted = (userId: string) => config.cmdWhitelist?.includes(userId) ?? false
+
+  /**
+   * 处理OCR识别
+   * @param imageElement 图片元素
+   * @param session 会话对象
+   * @returns OCR识别的文本
+   */
+  const handleOCR = async (imageElement: any, session: any) => {
+    const ocrResult = await session.bot.internal.ocrImage(imageElement.attrs.src)
+    if (Array.isArray(ocrResult) && ocrResult.length > 0) return ocrResult.map(item => item.text).filter(text => text?.trim()).join('\n')
+    return null
+  }
+
+  /** 监听消息事件 */
+  ctx.on('message', async (session) => {
+    const { channelId, elements, content } = session
+    // 处理消息转发
+    if (config.enableForward && config.forwardTarget) {
+      // 检查转发关键词
+      if (config.fwdKeywords?.length && content && !config.fwdKeywords.some(kw => kw.regex && new RegExp(kw.regex, 'i').test(content))) return
+      const senderInfo = `${session.userId}（${session.guildId || session.channelId}）`
+      // 处理图片OCR转发
+      const imageElement = elements?.find(el => el.type === 'img')
+      if (imageElement && config.forwardOcr) {
+        const ocrText = await handleOCR(imageElement, session)
+        if (ocrText) await session.bot.sendMessage(config.forwardTarget, `${senderInfo}\n${ocrText}`)
+      }
+      // 转发文本消息
+      if (content) await session.bot.sendMessage(config.forwardTarget, `${senderInfo}\n${content}`)
+    }
+    // 查找对应的启动器配置
+    const launcher = Object.entries(LAUNCHER_CONFIGS).find(([, cfg]) =>
+      (cfg.groups as readonly string[]).includes(channelId))?.[0] as LauncherName
+    if (!launcher) return
+    // 关键词回复
+    if (config.keywordReply && content && config.keywords) await checkKeywords(content, config.keywords, session)
+    // OCR关键词检测
+    if (config.ocrReply && config.ocrKeywords) {
+      const imageElement = elements?.find(el => el.type === 'img')
+      if (imageElement) {
+        const ocrText = await handleOCR(imageElement, session)
+        if (ocrText) await checkKeywords(ocrText, config.ocrKeywords, session)
+      }
+    }
+    // 文件检测
+    if (config.fileReply) {
+      const file = elements?.find(el => el.type === 'file')
+      if (file) {
+        const matched = Object.entries(LAUNCHER_CONFIGS).find(([, cfg]) =>
+          cfg.pattern.test(file.attrs.file))?.[0] as LauncherName
+        if (matched) await handleLauncherFile(session, launcher, matched)
+      }
+    }
+    // 防重复发送
+    if (config.preventDup && content && pending.has(channelId)) {
+      const shouldCancel = Object.values(LAUNCHER_CONFIGS).some(cfg =>
+        content.includes(cfg.groupId))
+      if (shouldCancel) {
+        const timer = pending.get(channelId)
+        if (timer) {
+          clearTimeout(timer)
+          pending.delete(channelId)
+        }
+      }
+    }
+  })
+
+  /**
+   * 发送预设回复命令
+   */
+  ctx.command('send <regexPattern> [target]', '发送预设回复')
     .option('list', '-l 查看关键词列表')
-    .action(async ({ session, options }, keyword, target) => {
+    .action(async ({ session, options }, regexPattern, target) => {
       if (!isUserWhitelisted(session.userId)) return
       if (options.list) {
         if (!config.keywords?.length) return '当前没有配置任何关键词'
         const keywordList = config.keywords.map((kw, index) =>
-          `${index + 1}. ${kw.keyword}${kw.regex ? ' (正则)' : ''}`
+          `${index + 1}. ${kw.regex}`
         ).join('\n')
         return `可用关键词列表：\n${keywordList}`
       }
-      if (!keyword) return '请提供关键词'
-      const kw = config.keywords?.find(k => k.keyword === keyword)
-      if (!kw) return `未找到关键词 "${keyword}" 的配置`
+      if (!regexPattern) return '请提供正则表达式'
+      const kw = config.keywords?.find(k => k.regex === regexPattern)
+      if (!kw) return `未找到正则表达式 "${regexPattern}" 的配置`
       let targetUserId: string | null = null
       if (target) {
         const at = h.select(h.parse(target), 'at')[0]?.attrs?.id
