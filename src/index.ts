@@ -37,7 +37,7 @@ const configs = {
   hmcl: {
     groupId: '666546887',
     groups: ['633640264', '203232161', '201034984', '533529045', '744304553', '282845310', '482624681', '991620626', '657677715', '775084843'],
-    pattern: /minecraft-exported-crash-info-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.zip$/i
+    pattern: /minecraft-exported-(crash-info|logs)-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.(zip|log)$/i
   },
   pcl: {
     groupId: '978054335',
@@ -266,6 +266,7 @@ async function handleFile(session: any, elements: any[] | undefined, launcher: L
   const matched = findLauncher(file.attrs.file)
   if (!matched) return
   const isCorrect = matched === launcher
+  if (matched === 'bakaxl' && isCorrect) return
   const launcherConfig = configs[matched]
   const msg = buildMsg(isCorrect, matched, launcherConfig.groupId)
   if (config.preventDup) {
