@@ -187,16 +187,9 @@ export function apply(ctx: Context, config: Config) {
    * @returns OCR识别的文本
    */
   const handleOCR = async (imageElement: any, session: any) => {
-    try {
-      const ocrPromise = session.bot.internal.ocrImage(imageElement.attrs.src)
-      const timeoutPromise = new Promise((_, reject) => { setTimeout(() => reject(new Error('OCR timeout')), 60000)})
-      const ocrResult = await Promise.race([ocrPromise, timeoutPromise])
-      if (Array.isArray(ocrResult) && ocrResult.length > 0) return ocrResult.map(item => item.text).filter(text => text?.trim()).join('\n')
-      return null
-    } catch (error) {
-      ctx.logger.warn('OCR识别失败:', error.message)
-      return null
-    }
+    const ocrResult = await session.bot.internal.ocrImage(imageElement.attrs.src)
+    if (Array.isArray(ocrResult) && ocrResult.length > 0) return ocrResult.map(item => item.text).filter(text => text?.trim()).join('\n')
+    return null
   }
 
   /** 监听消息事件 */
