@@ -4,10 +4,31 @@
 
 MC 启动器群助手 - 专为 Minecraft 启动器群设计（自用）
 
-## 功能特性
+## 项目结构
 
-- 🔧 **自动错误文件检测**：识别 HMCL、PCL2、BakaXL 启动器的错误报告文件
-- 🔀 **智能引导分流**：自动引导用户到对应启动器的技术支持群
+```
+src/
+├── index.ts                    # 插件入口文件
+├── config/
+│   └── schema.ts              # 配置模式定义
+├── services/                  # 服务层
+│   ├── commandService.ts      # 命令处理服务
+│   ├── enhancedCommands.ts    # 增强的文件管理命令
+│   ├── enhancedFileDownload.ts # 增强的文件下载服务
+│   ├── eventHandler.ts        # 事件处理服务
+│   ├── fileDetection.ts       # 文件识别服务
+│   ├── forward.ts             # 消息转发服务
+│   ├── keyword.ts             # 关键词服务
+│   ├── launcher.ts            # 启动器服务
+│   ├── messageService.ts      # OneBot 消息服务
+│   └── ocr.ts                 # OCR 识别服务
+├── types/                     # 类型定义
+│   ├── config.ts              # 配置类型
+│   └── launcher.ts            # 启动器类型
+└── utils/                     # 工具类
+    ├── enhancedFileRecord.ts  # 增强的文件记录管理
+    └── message.ts             # 消息工具
+```
 - 🎯 **关键词自动回复**：支持正则表达式匹配的关键词回复系统
 - 🚫 **防重复发送**：智能防止重复消息发送，避免刷屏
 - 👥 **用户权限管理**：支持白名单用户管理
