@@ -123,14 +123,14 @@ const whitelistMessageCache = new Map<string, {
 /** 最近上传者消息时间记录 - 按文件名索引 */
 const recentUploaderMessages = new Map<string, number>() // fileName -> timestamp
 
-/** 记录持续时间（4小时）- 最大记录时间 */
-const RECORDING_DURATION = 4 * 60 * 60 * 1000
+/** 记录持续时间（2小时）- 最大记录时间 */
+const RECORDING_DURATION = 2 * 60 * 60 * 1000
 
 /** 白名单用户回复后的无响应超时时间（15分钟） */
 const WHITELIST_REPLY_TIMEOUT = 15 * 60 * 1000
 
-/** 上传者发言前后的记录窗口时间（2分钟） */
-const UPLOADER_MESSAGE_WINDOW = 2 * 60 * 1000
+/** 上传者发言前后的记录窗口时间（5分钟） */
+const UPLOADER_MESSAGE_WINDOW = 5 * 60 * 1000
 
 /** 允许的文件扩展名 */
 const ALLOWED_EXTENSIONS = ['.zip', '.log', '.txt', '.json', '.gz', '.xz']
@@ -339,6 +339,30 @@ export async function handleFileDownload(fileElement: any, session: any, config:
     // 下载文件时也处理重名
     const ext = fileName.substring(fileName.lastIndexOf('.'))
     const base = fileName.substring(0, fileName.lastIndexOf('.'))
+
+    // 自动结束同一用户在同一频道的旧活跃文件
+    for (const [oldFileName, recording] of activeRecordings) {
+      if (
+        recording.uploaderUserId === session.userId &&
+        recording.channelId === session.channelId &&
+        oldFileName !== base
+      ) {
+        // 清理定时器
+        if (recording.timeout) clearTimeout(recording.timeout)
+        if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
+        activeRecordings.delete(oldFileName)
+        recentUploaderMessages.delete(oldFileName)
+        // 从频道活跃文件列表中移除
+        const channelFiles = channelActiveFiles.get(session.channelId)
+        if (channelFiles) {
+          channelFiles.delete(oldFileName)
+          if (channelFiles.size === 0) {
+            channelActiveFiles.delete(session.channelId)
+          }
+        }
+      }
+    }
+
     const uniqueFileName = await fileManager.getUniqueFileName(base, ext)
     const downloadResult = await downloadFile(fileUrl, uniqueFileName)
     if (!downloadResult) return
