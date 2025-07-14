@@ -190,6 +190,35 @@ class FileManager {
   }
 
   /**
+   * 生成唯一文件名（如已存在则自动加序号）
+   * @param baseName 文件名（不含扩展名）
+   * @param ext 扩展名（如 .json）
+   * @returns 唯一文件名（不含路径）
+   */
+  async getUniqueFileName(baseName: string, ext: string): Promise<string> {
+    let name = baseName
+    let count = 1
+    let fileName = `${name}${ext}`
+    while (await this.fileExists(fileName)) {
+      fileName = `${name}(${count})${ext}`
+      count++
+    }
+    return fileName
+  }
+
+  /**
+   * 检查文件是否存在
+   */
+  async fileExists(fileName: string): Promise<boolean> {
+    try {
+      await fs.access(join(this.dataPath, fileName))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * 读取文件记录
    * @param fileName 文件名
    * @returns 文件记录或null
@@ -205,15 +234,20 @@ class FileManager {
   }
 
   /**
-   * 保存文件记录
-   * @param fileName 文件名
+   * 保存文件记录（自动处理重名）
+   * @param fileName 文件名（不含扩展名）
    * @param upload 上传信息
    * @param messages 消息记录数组
+   * @returns 实际保存的文件名（不含扩展名）
    */
-  async saveFileRecord(fileName: string, upload: FileUploadInfo, messages: MessageRecord[] = []): Promise<void> {
-    const recordPath = join(this.dataPath, `${fileName}.json`)
+  async saveFileRecordUnique(fileName: string, upload: FileUploadInfo, messages: MessageRecord[] = []): Promise<string> {
+    const ext = '.json'
+    const base = fileName.replace(/\.json$/i, '')
+    const uniqueName = await this.getUniqueFileName(base, ext)
+    const recordPath = join(this.dataPath, uniqueName)
     const record = { upload, messages }
     await fs.writeFile(recordPath, JSON.stringify(record, null, 2), 'utf-8')
+    return uniqueName.replace(/\.json$/i, '')
   }
 
   /**
@@ -225,7 +259,9 @@ class FileManager {
     const existing = await this.readFileRecord(fileName)
     if (existing) {
       existing.messages.push(message)
-      await this.saveFileRecord(fileName, existing.upload, existing.messages)
+      // 直接写入文件（不处理重名，fileName 已唯一）
+      const recordPath = join(this.dataPath, `${fileName}.json`)
+      await fs.writeFile(recordPath, JSON.stringify(existing, null, 2), 'utf-8')
     }
   }
 
@@ -294,38 +330,43 @@ export async function handleFileDownload(fileElement: any, session: any, config:
   if (!isFileRecordAllowed(session.channelId, config)) return
 
   try {
-    const fileName = fileElement.attrs.file || `file_${Date.now()}`
+    let fileName = fileElement.attrs.file || `file_${Date.now()}`
     const fileUrl = fileElement.attrs.src
     const fileSize = parseInt(fileElement.attrs['file-size'] || '0')
     if (fileSize > 16 * 1024 * 1024) return
     if (!hasAllowedExtension(fileName)) return
-    const downloadResult = await downloadFile(fileUrl, fileName)
+
+    // 下载文件时也处理重名
+    const ext = fileName.substring(fileName.lastIndexOf('.'))
+    const base = fileName.substring(0, fileName.lastIndexOf('.'))
+    const uniqueFileName = await fileManager.getUniqueFileName(base, ext)
+    const downloadResult = await downloadFile(fileUrl, uniqueFileName)
     if (!downloadResult) return
 
-    // 创建文件记录
+    // 创建文件记录，记录用不带扩展名的文件名
     const uploadInfo: FileUploadInfo = {
-      fileName,
+      fileName: uniqueFileName,
       fileSendTime: new Date().toISOString(),
       channelId: session.channelId
     }
-    await fileManager.saveFileRecord(fileName, uploadInfo)
+    const recordName = await fileManager.saveFileRecordUnique(base, uploadInfo)
 
     // 添加到频道活跃文件列表
     if (!channelActiveFiles.has(session.channelId)) {
       channelActiveFiles.set(session.channelId, new Set())
     }
-    channelActiveFiles.get(session.channelId)!.add(fileName)
+    channelActiveFiles.get(session.channelId)!.add(recordName)
 
     // 开始记录对话
     const timeout = setTimeout(() => {
       // 清理该文件的记录
-      activeRecordings.delete(fileName)
-      recentUploaderMessages.delete(fileName)
+      activeRecordings.delete(recordName)
+      recentUploaderMessages.delete(recordName)
 
       // 从频道活跃文件列表中移除
       const channelFiles = channelActiveFiles.get(session.channelId)
       if (channelFiles) {
-        channelFiles.delete(fileName)
+        channelFiles.delete(recordName)
         if (channelFiles.size === 0) {
           channelActiveFiles.delete(session.channelId)
         }
@@ -334,9 +375,9 @@ export async function handleFileDownload(fileElement: any, session: any, config:
       // 清理相关的缓存消息
       const keysToDelete: string[] = []
       for (const [key, cache] of whitelistMessageCache) {
-        if (cache.relatedFiles.includes(fileName)) {
+        if (cache.relatedFiles.includes(recordName)) {
           // 从相关文件列表中移除该文件
-          cache.relatedFiles = cache.relatedFiles.filter(f => f !== fileName)
+          cache.relatedFiles = cache.relatedFiles.filter(f => f !== recordName)
           // 如果没有相关文件了，删除缓存
           if (cache.relatedFiles.length === 0) {
             keysToDelete.push(key)
@@ -346,8 +387,8 @@ export async function handleFileDownload(fileElement: any, session: any, config:
       keysToDelete.forEach(key => whitelistMessageCache.delete(key))
     }, RECORDING_DURATION)
 
-    activeRecordings.set(fileName, {
-      fileName,
+    activeRecordings.set(recordName, {
+      fileName: recordName,
       uploaderUserId: session.userId,
       channelId: session.channelId,
       startTime: Date.now(),
