@@ -135,6 +135,20 @@ const UPLOADER_MESSAGE_WINDOW = 5 * 60 * 1000
 /** 允许的文件扩展名 */
 const ALLOWED_EXTENSIONS = ['.zip', '.log', '.txt', '.json', '.gz', '.xz']
 
+/** 允许的图片扩展名 */
+const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png']
+
+/**
+ * 判断元素是否为允许的图片
+ * @param el 消息元素
+ */
+function isAllowedImageElement(el: any): boolean {
+  if (el.type !== 'img') return false
+  const fileName = el.attrs?.file || ''
+  const ext = fileName.toLowerCase().substring(fileName.lastIndexOf('.'))
+  return ALLOWED_IMAGE_EXTENSIONS.includes(ext)
+}
+
 /**
  * 构建回复消息元素
  * @param session 会话对象
@@ -565,11 +579,36 @@ export async function recordMessage(session: any, config: Config): Promise<void>
       recentUploaderMessages.set(fileName, Date.now())
       await associateUnlinkedCacheMessages(fileName, session.channelId)
       try {
-        const messageRecord: MessageRecord = {
-          content: session.content || '',
-          userId: session.userId
+        // 1. 记录文本消息
+        if (session.content) {
+          const messageRecord: MessageRecord = {
+            content: session.content || '',
+            userId: session.userId
+          }
+          await fileManager.addMessageToRecord(fileName, messageRecord)
         }
-        await fileManager.addMessageToRecord(fileName, messageRecord)
+        // 2. 记录图片消息（img 元素，允许的图片扩展名）
+        if (Array.isArray(session.elements)) {
+          for (const el of session.elements) {
+            if (isAllowedImageElement(el)) {
+              const imgUrl = el.attrs?.src
+              const imgFileName = el.attrs?.file || `img_${Date.now()}.jpg`
+              // 避免重名
+              const ext = imgFileName.substring(imgFileName.lastIndexOf('.'))
+              const base = imgFileName.substring(0, imgFileName.lastIndexOf('.'))
+              const uniqueImgFileName = await fileManager.getUniqueFileName(base, ext)
+              const downloadResult = await downloadFile(imgUrl, uniqueImgFileName)
+              if (downloadResult) {
+                // 追加图片消息到记录
+                const imgRecord: MessageRecord = {
+                  content: `[图片] ${uniqueImgFileName}`,
+                  userId: session.userId
+                }
+                await fileManager.addMessageToRecord(fileName, imgRecord)
+              }
+            }
+          }
+        }
       } catch (error) {
         console.error(`记录上传者消息到文件 ${fileName} 失败:`, error)
       }
