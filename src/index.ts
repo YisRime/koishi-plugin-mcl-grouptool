@@ -150,6 +150,11 @@ export function apply(ctx: Context, config: Config) {
     ctx.on('message', async (session) => {
       const { channelId, elements, content } = session
       try {
+        // 文件下载和记录（提前）
+        if (config.fileRecord) {
+          const file = elements?.find(el => el.type === 'file')
+          if (file) await handleFileDownload(file, session, config)
+        }
         // 记录对话
         if (config.fileRecord) await recordMessage(session, config)
         // 消息转发
@@ -164,11 +169,6 @@ export function apply(ctx: Context, config: Config) {
             const ocrText = await handleOCR(imageElement, session)
             if (ocrText) await checkKeywords(ocrText, config.ocrKeywords, session, config)
           }
-        }
-        // 文件下载和记录
-        if (config.fileRecord) {
-          const file = elements?.find(el => el.type === 'file')
-          if (file) await handleFileDownload(file, session, config)
         }
         // 启动器文件检测
         if (config.fileReply && launcher) {

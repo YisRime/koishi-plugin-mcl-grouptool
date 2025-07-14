@@ -340,12 +340,11 @@ export async function handleFileDownload(fileElement: any, session: any, config:
     const ext = fileName.substring(fileName.lastIndexOf('.'))
     const base = fileName.substring(0, fileName.lastIndexOf('.'))
 
-    // 自动结束同一用户在同一频道的旧活跃文件
+    // 自动结束同一用户在同一频道的所有旧活跃文件（无论文件名是否相同）
     for (const [oldFileName, recording] of activeRecordings) {
       if (
         recording.uploaderUserId === session.userId &&
-        recording.channelId === session.channelId &&
-        oldFileName !== base
+        recording.channelId === session.channelId
       ) {
         // 清理定时器
         if (recording.timeout) clearTimeout(recording.timeout)
@@ -590,9 +589,9 @@ export async function recordMessage(session: any, config: Config): Promise<void>
     for (const fileName of channelFiles) {
       const recording = activeRecordings.get(fileName)
       if (!recording) continue
-      // 检查@
-      const atElements = session.elements?.filter(el => el.type === 'at') || []
-      const atUploader = atElements.some(atEl => atEl.attrs?.id === recording.uploaderUserId)
+      // 检查@，只允许@上传者
+      const atElements = (session.elements?.filter(el => el.type === 'at' && el.attrs?.id === recording.uploaderUserId)) || []
+      const atUploader = atElements.length > 0
       // 检查回复
       const replyUploader = repliedUserId && repliedUserId === recording.uploaderUserId
       if (atUploader || replyUploader) {
