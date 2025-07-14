@@ -417,11 +417,13 @@ function checkIfMentionsUploader(session: any, uploaderUserId: string): boolean 
 /**
  * 检查消息是否回复了某个用户的消息
  * @param session 会话对象
- * @returns 是否有回复
+ * @returns 被回复的用户ID（如有），否则null
  */
-function hasReply(session: any): boolean {
+function getRepliedUserId(session: any): string | null {
   const quoteElement = session.elements?.find(el => el.type === 'quote')
-  return !!quoteElement
+  if (!quoteElement) return null
+  // 尝试从quote元素中获取原消息发送者ID
+  return quoteElement.attrs?.id || null
 }
 
 /**
@@ -521,7 +523,7 @@ export async function recordMessage(session: any, config: Config): Promise<void>
   cleanupExpiredCache()
 
   const isWhitelisted = isUserWhitelisted(session.userId, config)
-  const isReply = hasReply(session)
+  const repliedUserId = getRepliedUserId(session)
 
   // 检查是否是任何活跃文件的上传者
   const uploaderFiles: string[] = []
@@ -537,14 +539,8 @@ export async function recordMessage(session: any, config: Config): Promise<void>
     for (const fileName of uploaderFiles) {
       const recording = activeRecordings.get(fileName)
       if (!recording) continue
-
-      // 更新该文件的上传者最近消息时间
       recentUploaderMessages.set(fileName, Date.now())
-
-      // 关联之前未关联的缓存消息到这个活跃文件
       await associateUnlinkedCacheMessages(fileName, session.channelId)
-
-      // 立即记录上传者消息到对应文件
       try {
         const messageRecord: MessageRecord = {
           content: session.content || '',
@@ -554,11 +550,7 @@ export async function recordMessage(session: any, config: Config): Promise<void>
       } catch (error) {
         console.error(`记录上传者消息到文件 ${fileName} 失败:`, error)
       }
-
-      // 将相关的缓存白名单消息添加到该文件记录
       await flushCachedMessagesForFile(fileName)
-
-      // 上传者发言，重置白名单超时
       if (recording.whitelistTimeout) {
         clearTimeout(recording.whitelistTimeout)
         recording.whitelistTimeout = undefined
@@ -569,40 +561,37 @@ export async function recordMessage(session: any, config: Config): Promise<void>
 
   // 如果是白名单用户的消息
   if (isWhitelisted) {
-    // 检查消息是否@了任何活跃文件的上传者
+    // 检查@和回复目标是否为活跃文件的上传者
     const mentionedFiles: string[] = []
     for (const fileName of channelFiles) {
       const recording = activeRecordings.get(fileName)
-      if (recording && checkIfMentionsUploader(session, recording.uploaderUserId)) {
+      if (!recording) continue
+      // 检查@
+      const atElements = session.elements?.filter(el => el.type === 'at') || []
+      const atUploader = atElements.some(atEl => atEl.attrs?.id === recording.uploaderUserId)
+      // 检查回复
+      const replyUploader = repliedUserId && repliedUserId === recording.uploaderUserId
+      if (atUploader || replyUploader) {
         mentionedFiles.push(fileName)
       }
     }
-
-    // 1. 白名单用户的回复与@上传者的消息 - 直接记录到相关文件
-    if (isReply || mentionedFiles.length > 0) {
-      const targetFiles = mentionedFiles.length > 0 ? mentionedFiles : channelFiles
-
-      for (const fileName of targetFiles) {
+    // 只有@或回复了活跃文件上传者才记录，否则为无关消息
+    if (mentionedFiles.length > 0) {
+      for (const fileName of mentionedFiles) {
         const recording = activeRecordings.get(fileName)
         if (!recording) continue
-
         try {
           const messageRecord: MessageRecord = {
             content: session.content || '',
             userId: session.userId
           }
           await fileManager.addMessageToRecord(fileName, messageRecord)
-
-          // 记录白名单用户回复时间，设置超时
           recording.lastWhitelistReplyTime = Date.now()
           if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
           recording.whitelistTimeout = setTimeout(() => {
-            // 白名单回复超时，停止该文件的记录
             if (recording.timeout) clearTimeout(recording.timeout)
             activeRecordings.delete(fileName)
             recentUploaderMessages.delete(fileName)
-
-            // 从频道活跃文件列表中移除
             const channelFileSet = channelActiveFiles.get(session.channelId)
             if (channelFileSet) {
               channelFileSet.delete(fileName)
@@ -617,19 +606,14 @@ export async function recordMessage(session: any, config: Config): Promise<void>
       }
       return
     }
-
-    // 2. 白名单用户的其他消息 - 缓存处理
+    // 其他白名单消息逻辑保持不变
     const messageKey = getMessageKey(session)
     const activeFiles = getActiveFilesInChannel(session.channelId)
-
     if (activeFiles.length > 0) {
-      // 检查是否有文件的上传者在2分钟内活跃
       const recentActiveFiles = activeFiles.filter(fileName =>
         isFileUploaderRecentlyActive(fileName)
       )
-
       if (recentActiveFiles.length > 0) {
-        // 有活跃的上传者，缓存消息并关联到这些文件
         const messageRecord: MessageRecord = {
           content: session.content || '',
           userId: session.userId
@@ -637,11 +621,9 @@ export async function recordMessage(session: any, config: Config): Promise<void>
         whitelistMessageCache.set(messageKey, {
           message: messageRecord,
           timestamp: Date.now(),
-          relatedFiles: recentActiveFiles // 记录所有相关的文件
+          relatedFiles: recentActiveFiles
         })
       } else {
-        // 没有活跃的上传者，缓存消息但不立即关联文件
-        // 等待上传者活跃时再决定关联关系
         const messageRecord: MessageRecord = {
           content: session.content || '',
           userId: session.userId
@@ -649,7 +631,7 @@ export async function recordMessage(session: any, config: Config): Promise<void>
         whitelistMessageCache.set(messageKey, {
           message: messageRecord,
           timestamp: Date.now(),
-          relatedFiles: [] // 暂时不关联任何文件
+          relatedFiles: []
         })
       }
     }
