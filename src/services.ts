@@ -571,8 +571,20 @@ export async function recordMessage(session: any, config: Config): Promise<void>
     }
   }
 
-  // 如果是上传者的消息
+  // 上传者消息过滤：@或回复了非白名单用户则不记录
   if (uploaderFiles.length > 0) {
+    // 检查@对象
+    const atElements = (session.elements?.filter(el => el.type === 'at')) || []
+    const atNonWhitelist = atElements.some(atEl => {
+      const id = atEl.attrs?.id
+      return id && !isUserWhitelisted(id, config)
+    })
+    // 检查回复对象
+    let replyNonWhitelist = false
+    if (repliedUserId && !isUserWhitelisted(repliedUserId, config)) {
+      replyNonWhitelist = true
+    }
+    if (atNonWhitelist || replyNonWhitelist) return
     for (const fileName of uploaderFiles) {
       const recording = activeRecordings.get(fileName)
       if (!recording) continue
