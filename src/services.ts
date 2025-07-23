@@ -261,7 +261,8 @@ class FileManager {
     const recordPath = join(this.dataPath, uniqueName)
     const record = { upload, messages }
     await fs.writeFile(recordPath, JSON.stringify(record, null, 2), 'utf-8')
-    return uniqueName.replace(/\.json$/i, '')
+    // 返回完整文件名（带扩展名）
+    return uniqueName
   }
 
   /**
@@ -380,7 +381,7 @@ export async function handleFileDownload(fileElement: any, session: any, config:
     const downloadResult = await downloadFile(fileUrl, uniqueFileName)
     if (!downloadResult) return
 
-    // 创建文件记录，记录用不带扩展名的文件名
+    // 创建文件记录，记录用完整文件名（带扩展名）
     const uploadInfo: FileUploadInfo = {
       fileName: uniqueFileName,
       fileSendTime: new Date().toISOString(),
@@ -434,21 +435,6 @@ export async function handleFileDownload(fileElement: any, session: any, config:
   } catch (error) {
     console.error('文件下载失败:', error)
   }
-}
-
-/**
- * 检查消息是否@了文件上传者
- * @param session 会话对象
- * @param uploaderUserId 上传者用户ID
- * @returns 是否@了文件上传者
- */
-function checkIfMentionsUploader(session: any, uploaderUserId: string): boolean {
-  // 检查消息中是否有@元素
-  const atElements = session.elements?.filter(el => el.type === 'at') || []
-  if (atElements.length === 0) return false
-
-  // 检查是否@了文件上传者
-  return atElements.some(atEl => atEl.attrs?.id === uploaderUserId)
 }
 
 /**
