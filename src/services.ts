@@ -347,8 +347,15 @@ export async function handleFileDownload(fileElement: any, session: any, config:
   try {
     let fileName = fileElement.attrs.file || `file_${Date.now()}`
     const fileUrl = fileElement.attrs.src
-    const fileSize = parseInt(fileElement.attrs['file-size'] || '0')
-    if (fileSize > 16 * 1024 * 1024) return
+    // 支持 file-size 和 file_size 字段，字符串或数字
+    let fileSize = 0
+    if (typeof fileElement.attrs['file-size'] !== 'undefined') {
+      fileSize = parseInt(fileElement.attrs['file-size'])
+    } else if (typeof fileElement.attrs['file_size'] !== 'undefined') {
+      fileSize = parseInt(fileElement.attrs['file_size'])
+    }
+    // 文件大小限制提升为 32MB
+    if (fileSize > 32 * 1024 * 1024) return
     if (!hasAllowedExtension(fileName)) return
 
     // 下载文件时也处理重名
