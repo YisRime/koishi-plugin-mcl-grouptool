@@ -1,18 +1,11 @@
 import { Context, Schema, h } from 'koishi'
 import {} from 'koishi-plugin-adapter-onebot'
-import {
-  buildReplyElements,
-  isUserWhitelisted,
-  handleFileDownload,
-  recordMessage,
-  handleOCR,
-  checkKeywords,
-  handleForward,
-  handleLauncherFile,
-  checkCancelDelay,
-  getLauncherByChannel,
-  detectLauncherFromFile
-} from './services'
+import { buildReplyElements, isUserWhitelisted } from './utils'
+import { FileRecordService } from './services/FileRecordService'
+import { FileReplyService } from './services/FileReplyService'
+import { KeywordReplyService } from './services/KeywordReplyService'
+import { OcrReplyService } from './services/OcrReplyService'
+import { ForwardingService } from './services/ForwardingService'
 
 export const name = 'mcl-grouptool'
 
@@ -34,51 +27,28 @@ export const usage = `
  * 关键词配置接口
  */
 interface KeywordConfig {
-  /** 正则表达式 */
   regex: string
-  /** 回复内容 */
   reply: string
 }
 
-/**
- * 插件配置接口
- */
 export interface Config {
-  /** 延迟发送提示 */
   preventDup?: boolean
-  /** 回复时@用户 */
   mention?: boolean
-  /** 回复时引用消息 */
   quote?: boolean
-  /** 启用报错指引 */
   fileReply?: boolean
-  /** 启用关键词回复 */
   keywordReply?: boolean
-  /** 关键词回复配置 */
   keywords?: KeywordConfig[]
-  /** OCR关键词配置 */
   ocrKeywords?: KeywordConfig[]
-  /** 转发关键词配置 */
   fwdKeywords?: { regex: string }[]
-  /** 启用消息转发 */
   enableForward?: boolean
-  /** 转发目标群 */
   forwardTarget?: string
-  /** 白名单用户 */
   whitelist?: string[]
-  /** 启用图片识别 */
   ocrReply?: boolean
-  /** 转发图片识别 */
   forwardOcr?: boolean
-  /** 启用报告记录 */
   fileRecord?: boolean
-  /** 额外记录群组 */
   additionalGroups?: string[]
 }
 
-/**
- * 插件配置模式
- */
 export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     fileReply: Schema.boolean().default(false).description('启用报错指引'),
@@ -111,18 +81,20 @@ export const Config: Schema<Config> = Schema.intersect([
   }).description('关键词配置')
 ])
 
-/**
- * 插件主函数
- * @param ctx Koishi上下文
- * @param config 插件配置
- */
 export function apply(ctx: Context, config: Config) {
-  // 仅在有预设回复时注册send命令
+  // 实例化所有可能用到的服务
+  const fileReplyService = config.fileReply ? new FileReplyService(ctx, config) : null
+  const keywordReplyService = config.keywordReply ? new KeywordReplyService(ctx, config) : null
+  const ocrReplyService = config.ocrReply ? new OcrReplyService(ctx, config) : null
+  const forwardingService = config.enableForward ? new ForwardingService(ctx, config) : null
+  const fileRecordService = config.fileRecord ? new FileRecordService(ctx, config) : null
+
+  // 仅在有预设回复时注册 send 命令
   if (config.keywords?.length) {
     ctx.command('send <regexPattern> [target]', '发送预设回复')
       .option('list', '-l 查看关键词列表')
       .action(async ({ session, options }, regexPattern, target) => {
-        if (!isUserWhitelisted(session.userId, config)) return;
+        if (!isUserWhitelisted(session.userId, config)) return
         if (options.list) {
           const keywordList = config.keywords.map((kw, index) => `${index + 1}. ${kw.regex}`).join('\n')
           return `可用关键词列表：\n${keywordList}\n\n使用方法: send <正则表达式> [目标用户]`
@@ -143,46 +115,45 @@ export function apply(ctx: Context, config: Config) {
         }
       })
   }
-  // 仅在开启功能时注册消息监听器
-  const needsMessageListener = config.fileReply || config.keywordReply ||
-    config.ocrReply || config.enableForward || config.fileRecord
+
+  // 仅在开启了任何一个功能时才注册消息监听器
+  const needsMessageListener = fileReplyService || keywordReplyService || ocrReplyService || forwardingService || fileRecordService
   if (needsMessageListener) {
     ctx.on('message', async (session) => {
-      const { channelId, elements, content } = session
       try {
-        // 文件下载和记录（提前）
-        if (config.fileRecord) {
-          const file = elements?.find(el => el.type === 'file')
-          if (file) await handleFileDownload(file, session, config)
-        }
-        // 记录对话
-        if (config.fileRecord) await recordMessage(session, config)
-        // 消息转发
-        if (config.enableForward) await handleForward(session, config)
-        const launcher = getLauncherByChannel(channelId)
-        // 关键词回复
-        if (config.keywordReply && content && config.keywords?.length) await checkKeywords(content, config.keywords, session, config)
-        // OCR关键词检测
-        if (config.ocrReply && config.ocrKeywords?.length) {
-          const imageElement = elements?.find(el => el.type === 'img')
-          if (imageElement) {
-            const ocrText = await handleOCR(imageElement, session)
-            if (ocrText) await checkKeywords(ocrText, config.ocrKeywords, session, config)
-          }
-        }
-        // 启动器文件检测
-        if (config.fileReply && launcher) {
-          const file = elements?.find(el => el.type === 'file')
+        // 文件下载和记录（如果启用）
+        if (fileRecordService) {
+          const file = session.elements?.find(el => el.type === 'file')
           if (file) {
-            const fileName = file.attrs.file || ''
-            const matched = detectLauncherFromFile(fileName)
-            if (matched) await handleLauncherFile(session, launcher, matched, config)
+            // 注意: FileRecordService 现在需要一个处理文件上传的入口方法
+            await fileRecordService.handleFile(file, session)
           }
+          // FileRecordService 也需要一个处理所有消息的入口方法
+          await fileRecordService.handleMessage(session)
         }
-        // 防重复发送
-        if (config.preventDup && content && launcher) checkCancelDelay(content, channelId)
+
+        // 消息转发（如果启用）
+        if (forwardingService) {
+          await forwardingService.handleMessage(session)
+        }
+
+        // 关键词回复（如果启用）
+        if (keywordReplyService) {
+          await keywordReplyService.handleMessage(session)
+        }
+
+        // OCR 关键词检测（如果启用）
+        if (ocrReplyService) {
+          await ocrReplyService.handleMessage(session)
+        }
+
+        // 报错指引（如果启用）
+        if (fileReplyService) {
+          await fileReplyService.handleMessage(session)
+        }
+
       } catch (error) {
-        console.error('处理消息事件时发生错误:', error)
+        ctx.logger.warn('处理 mcl-grouptool 消息事件时发生错误:', error)
       }
     })
   }
