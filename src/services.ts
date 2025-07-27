@@ -106,8 +106,8 @@ const activeRecordings = new Map<string, {
   channelId: string
   startTime: number
   lastWhitelistReplyTime?: number
-  // timeout?: NodeJS.Timeout // 移除
-  // whitelistTimeout?: NodeJS.Timeout // 移除
+  timeout?: NodeJS.Timeout
+  whitelistTimeout?: NodeJS.Timeout
 }>()
 
 /** 频道当前活跃文件映射 */
@@ -123,8 +123,8 @@ const whitelistMessageCache = new Map<string, {
 /** 最近上传者消息时间记录 - 按文件名索引 */
 const recentUploaderMessages = new Map<string, number>() // fileName -> timestamp
 
-/** 记录持续时间（24小时）- 最大记录时间 */
-const RECORDING_DURATION = 24 * 60 * 60 * 1000
+/** 记录持续时间（2小时）- 最大记录时间 */
+const RECORDING_DURATION = 2 * 60 * 60 * 1000
 
 /** 白名单用户回复后的无响应超时时间（15分钟） */
 const WHITELIST_REPLY_TIMEOUT = 15 * 60 * 1000
@@ -261,8 +261,7 @@ class FileManager {
     const recordPath = join(this.dataPath, uniqueName)
     const record = { upload, messages }
     await fs.writeFile(recordPath, JSON.stringify(record, null, 2), 'utf-8')
-    // 返回完整文件名（带扩展名）
-    return uniqueName
+    return uniqueName.replace(/\.json$/i, '')
   }
 
   /**
@@ -347,15 +346,8 @@ export async function handleFileDownload(fileElement: any, session: any, config:
   try {
     let fileName = fileElement.attrs.file || `file_${Date.now()}`
     const fileUrl = fileElement.attrs.src
-    // 支持 file-size 和 file_size 字段，字符串或数字
-    let fileSize = 0
-    if (typeof fileElement.attrs['file-size'] !== 'undefined') {
-      fileSize = parseInt(fileElement.attrs['file-size'])
-    } else if (typeof fileElement.attrs['file_size'] !== 'undefined') {
-      fileSize = parseInt(fileElement.attrs['file_size'])
-    }
-    // 文件大小限制提升为 32MB
-    if (fileSize > 32 * 1024 * 1024) return
+    const fileSize = parseInt(fileElement.attrs['file-size'] || '0')
+    if (fileSize > 16 * 1024 * 1024) return
     if (!hasAllowedExtension(fileName)) return
 
     // 下载文件时也处理重名
@@ -368,6 +360,9 @@ export async function handleFileDownload(fileElement: any, session: any, config:
         recording.uploaderUserId === session.userId &&
         recording.channelId === session.channelId
       ) {
+        // 清理定时器
+        if (recording.timeout) clearTimeout(recording.timeout)
+        if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
         activeRecordings.delete(oldFileName)
         recentUploaderMessages.delete(oldFileName)
         // 从频道活跃文件列表中移除
@@ -385,7 +380,7 @@ export async function handleFileDownload(fileElement: any, session: any, config:
     const downloadResult = await downloadFile(fileUrl, uniqueFileName)
     if (!downloadResult) return
 
-    // 创建文件记录，记录用完整文件名（带扩展名）
+    // 创建文件记录，记录用不带扩展名的文件名
     const uploadInfo: FileUploadInfo = {
       fileName: uniqueFileName,
       fileSendTime: new Date().toISOString(),
@@ -399,17 +394,61 @@ export async function handleFileDownload(fileElement: any, session: any, config:
     }
     channelActiveFiles.get(session.channelId)!.add(recordName)
 
-    // --- handleFileDownload 处，移除 setTimeout 相关代码，直接 activeRecordings.set(...)
+    // 开始记录对话
+    const timeout = setTimeout(() => {
+      // 清理该文件的记录
+      activeRecordings.delete(recordName)
+      recentUploaderMessages.delete(recordName)
+
+      // 从频道活跃文件列表中移除
+      const channelFiles = channelActiveFiles.get(session.channelId)
+      if (channelFiles) {
+        channelFiles.delete(recordName)
+        if (channelFiles.size === 0) {
+          channelActiveFiles.delete(session.channelId)
+        }
+      }
+
+      // 清理相关的缓存消息
+      const keysToDelete: string[] = []
+      for (const [key, cache] of whitelistMessageCache) {
+        if (cache.relatedFiles.includes(recordName)) {
+          // 从相关文件列表中移除该文件
+          cache.relatedFiles = cache.relatedFiles.filter(f => f !== recordName)
+          // 如果没有相关文件了，删除缓存
+          if (cache.relatedFiles.length === 0) {
+            keysToDelete.push(key)
+          }
+        }
+      }
+      keysToDelete.forEach(key => whitelistMessageCache.delete(key))
+    }, RECORDING_DURATION)
 
     activeRecordings.set(recordName, {
       fileName: recordName,
       uploaderUserId: session.userId,
       channelId: session.channelId,
       startTime: Date.now(),
+      timeout
     })
   } catch (error) {
     console.error('文件下载失败:', error)
   }
+}
+
+/**
+ * 检查消息是否@了文件上传者
+ * @param session 会话对象
+ * @param uploaderUserId 上传者用户ID
+ * @returns 是否@了文件上传者
+ */
+function checkIfMentionsUploader(session: any, uploaderUserId: string): boolean {
+  // 检查消息中是否有@元素
+  const atElements = session.elements?.filter(el => el.type === 'at') || []
+  if (atElements.length === 0) return false
+
+  // 检查是否@了文件上传者
+  return atElements.some(atEl => atEl.attrs?.id === uploaderUserId)
 }
 
 /**
@@ -586,10 +625,10 @@ export async function recordMessage(session: any, config: Config): Promise<void>
         console.error(`记录上传者消息到文件 ${fileName} 失败:`, error)
       }
       await flushCachedMessagesForFile(fileName)
-      // if (recording.whitelistTimeout) {
-      //   clearTimeout(recording.whitelistTimeout)
-      //   recording.whitelistTimeout = undefined
-      // }
+      if (recording.whitelistTimeout) {
+        clearTimeout(recording.whitelistTimeout)
+        recording.whitelistTimeout = undefined
+      }
     }
     return
   }
@@ -622,19 +661,19 @@ export async function recordMessage(session: any, config: Config): Promise<void>
           }
           await fileManager.addMessageToRecord(fileName, messageRecord)
           recording.lastWhitelistReplyTime = Date.now()
-          // if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
-          // recording.whitelistTimeout = setTimeout(() => {
-          //   if (recording.timeout) clearTimeout(recording.timeout)
-          //   activeRecordings.delete(fileName)
-          //   recentUploaderMessages.delete(fileName)
-          //   const channelFileSet = channelActiveFiles.get(session.channelId)
-          //   if (channelFileSet) {
-          //     channelFileSet.delete(fileName)
-          //     if (channelFileSet.size === 0) {
-          //       channelActiveFiles.delete(session.channelId)
-          //     }
-          //   }
-          // }, WHITELIST_REPLY_TIMEOUT)
+          if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
+          recording.whitelistTimeout = setTimeout(() => {
+            if (recording.timeout) clearTimeout(recording.timeout)
+            activeRecordings.delete(fileName)
+            recentUploaderMessages.delete(fileName)
+            const channelFileSet = channelActiveFiles.get(session.channelId)
+            if (channelFileSet) {
+              channelFileSet.delete(fileName)
+              if (channelFileSet.size === 0) {
+                channelActiveFiles.delete(session.channelId)
+              }
+            }
+          }, WHITELIST_REPLY_TIMEOUT)
         } catch (error) {
           console.error(`记录白名单回复消息到文件 ${fileName} 失败:`, error)
         }
@@ -736,23 +775,6 @@ const pending = new Map<string, NodeJS.Timeout>()
  * @param config 配置对象
  */
 export async function handleLauncherFile(session: any, launcher: LauncherName, matched: LauncherName, config: Config): Promise<void> {
-  // 仅 666546887 和 978054335 互相指引
-  const groupHmcl = '666546887'
-  const groupPcl = '978054335'
-  // 当前频道ID
-  const channelId = session.channelId
-  // 如果在hmcl群收到pcl文件
-  if (channelId === groupHmcl && matched === 'pcl') {
-    const msg = `本群不解决 PCL 启动器的报错问题，请加 PCL 用户群：${groupPcl}`
-    await session.send(buildReplyElements(session, msg, undefined, config))
-    return
-  }
-  // 如果在pcl群收到hmcl文件
-  if (channelId === groupPcl && matched === 'hmcl') {
-    const msg = `本群不解决 HMCL 启动器的报错问题，请加 HMCL 用户群：${groupHmcl}`
-    await session.send(buildReplyElements(session, msg, undefined, config))
-    return
-  }
   const isCorrect = matched === launcher
   if (matched === 'bakaxl' && isCorrect) return
   const launcherConfig = LAUNCHER_CONFIGS[matched]
@@ -810,65 +832,22 @@ export function detectLauncherFromFile(fileName: string): LauncherName | null {
     cfg.pattern.test(fileName))?.[0] as LauncherName || null
 }
 
-// --- 全局定时器统一清理超时 ---
-// 每30秒执行一次
+// 定期清理过期缓存 - 每分钟执行一次
 setInterval(() => {
-  const now = Date.now();
-  // 1. 清理过期缓存
-  cleanupExpiredCache();
+  cleanupExpiredCache()
 
-  // 2. 清理超时的活跃文件记录
-  for (const [fileName, recording] of activeRecordings) {
-    // 24小时未处理自动清理
-    if (now - recording.startTime > RECORDING_DURATION) {
-      activeRecordings.delete(fileName);
-      recentUploaderMessages.delete(fileName);
-      const channelFiles = channelActiveFiles.get(recording.channelId);
-      if (channelFiles) {
-        channelFiles.delete(fileName);
-        if (channelFiles.size === 0) channelActiveFiles.delete(recording.channelId);
-      }
-      // 清理相关缓存消息
-      const keysToDelete: string[] = [];
-      for (const [key, cache] of whitelistMessageCache) {
-        if (cache.relatedFiles.includes(fileName)) {
-          cache.relatedFiles = cache.relatedFiles.filter(f => f !== fileName);
-          if (cache.relatedFiles.length === 0) keysToDelete.push(key);
-        }
-      }
-      keysToDelete.forEach(key => whitelistMessageCache.delete(key));
-      continue;
-    }
-    // 3. 白名单回复超时（15分钟）
-    if (recording.lastWhitelistReplyTime && (now - recording.lastWhitelistReplyTime > WHITELIST_REPLY_TIMEOUT)) {
-      activeRecordings.delete(fileName);
-      recentUploaderMessages.delete(fileName);
-      const channelFiles = channelActiveFiles.get(recording.channelId);
-      if (channelFiles) {
-        channelFiles.delete(fileName);
-        if (channelFiles.size === 0) channelActiveFiles.delete(recording.channelId);
-      }
-      // 清理相关缓存消息
-      const keysToDelete: string[] = [];
-      for (const [key, cache] of whitelistMessageCache) {
-        if (cache.relatedFiles.includes(fileName)) {
-          cache.relatedFiles = cache.relatedFiles.filter(f => f !== fileName);
-          if (cache.relatedFiles.length === 0) keysToDelete.push(key);
-        }
-      }
-      keysToDelete.forEach(key => whitelistMessageCache.delete(key));
-    }
-  }
+  // 清理过期的文件上传者消息时间记录
+  const now = Date.now()
+  const expiredFiles: string[] = []
 
-  // 4. 清理过期的文件上传者消息时间记录
-  const expiredFiles: string[] = [];
   for (const [fileName, timestamp] of recentUploaderMessages) {
     if (now - timestamp > UPLOADER_MESSAGE_WINDOW) {
-      expiredFiles.push(fileName);
+      expiredFiles.push(fileName)
     }
   }
-  expiredFiles.forEach(fileName => recentUploaderMessages.delete(fileName));
-}, 2 * 60 * 1000)
+
+  expiredFiles.forEach(fileName => recentUploaderMessages.delete(fileName))
+}, 60 * 1000)
 
 /**
  * 动态关联未关联的缓存消息到新活跃的文件
