@@ -123,8 +123,8 @@ const whitelistMessageCache = new Map<string, {
 /** 最近上传者消息时间记录 - 按文件名索引 */
 const recentUploaderMessages = new Map<string, number>() // fileName -> timestamp
 
-/** 记录持续时间（2小时）- 最大记录时间 */
-const RECORDING_DURATION = 2 * 60 * 60 * 1000
+/** 记录持续时间（24小时）- 最大记录时间 */
+const RECORDING_DURATION = 24 * 60 * 60 * 1000
 
 /** 白名单用户回复后的无响应超时时间（15分钟） */
 const WHITELIST_REPLY_TIMEOUT = 15 * 60 * 1000
