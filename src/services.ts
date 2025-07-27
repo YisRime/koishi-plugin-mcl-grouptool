@@ -768,6 +768,23 @@ const pending = new Map<string, NodeJS.Timeout>()
  * @param config 配置对象
  */
 export async function handleLauncherFile(session: any, launcher: LauncherName, matched: LauncherName, config: Config): Promise<void> {
+  // 仅 666546887 和 978054335 互相指引
+  const groupHmcl = '666546887'
+  const groupPcl = '978054335'
+  // 当前频道ID
+  const channelId = session.channelId
+  // 如果在hmcl群收到pcl文件
+  if (channelId === groupHmcl && matched === 'pcl') {
+    const msg = `本群不解决 PCL 启动器的报错问题，请加 PCL 用户群：${groupPcl}`
+    await session.send(buildReplyElements(session, msg, undefined, config))
+    return
+  }
+  // 如果在pcl群收到hmcl文件
+  if (channelId === groupPcl && matched === 'hmcl') {
+    const msg = `本群不解决 HMCL 启动器的报错问题，请加 HMCL 用户群：${groupHmcl}`
+    await session.send(buildReplyElements(session, msg, undefined, config))
+    return
+  }
   const isCorrect = matched === launcher
   if (matched === 'bakaxl' && isCorrect) return
   const launcherConfig = LAUNCHER_CONFIGS[matched]
