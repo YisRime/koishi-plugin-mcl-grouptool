@@ -106,8 +106,8 @@ const activeRecordings = new Map<string, {
   channelId: string
   startTime: number
   lastWhitelistReplyTime?: number
-  timeout?: NodeJS.Timeout
-  whitelistTimeout?: NodeJS.Timeout
+  // timeout?: NodeJS.Timeout // 移除
+  // whitelistTimeout?: NodeJS.Timeout // 移除
 }>()
 
 /** 频道当前活跃文件映射 */
@@ -368,9 +368,6 @@ export async function handleFileDownload(fileElement: any, session: any, config:
         recording.uploaderUserId === session.userId &&
         recording.channelId === session.channelId
       ) {
-        // 清理定时器
-        if (recording.timeout) clearTimeout(recording.timeout)
-        if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
         activeRecordings.delete(oldFileName)
         recentUploaderMessages.delete(oldFileName)
         // 从频道活跃文件列表中移除
@@ -402,42 +399,13 @@ export async function handleFileDownload(fileElement: any, session: any, config:
     }
     channelActiveFiles.get(session.channelId)!.add(recordName)
 
-    // 开始记录对话
-    const timeout = setTimeout(() => {
-      // 清理该文件的记录
-      activeRecordings.delete(recordName)
-      recentUploaderMessages.delete(recordName)
-
-      // 从频道活跃文件列表中移除
-      const channelFiles = channelActiveFiles.get(session.channelId)
-      if (channelFiles) {
-        channelFiles.delete(recordName)
-        if (channelFiles.size === 0) {
-          channelActiveFiles.delete(session.channelId)
-        }
-      }
-
-      // 清理相关的缓存消息
-      const keysToDelete: string[] = []
-      for (const [key, cache] of whitelistMessageCache) {
-        if (cache.relatedFiles.includes(recordName)) {
-          // 从相关文件列表中移除该文件
-          cache.relatedFiles = cache.relatedFiles.filter(f => f !== recordName)
-          // 如果没有相关文件了，删除缓存
-          if (cache.relatedFiles.length === 0) {
-            keysToDelete.push(key)
-          }
-        }
-      }
-      keysToDelete.forEach(key => whitelistMessageCache.delete(key))
-    }, RECORDING_DURATION)
+    // --- handleFileDownload 处，移除 setTimeout 相关代码，直接 activeRecordings.set(...)
 
     activeRecordings.set(recordName, {
       fileName: recordName,
       uploaderUserId: session.userId,
       channelId: session.channelId,
       startTime: Date.now(),
-      timeout
     })
   } catch (error) {
     console.error('文件下载失败:', error)
@@ -618,10 +586,10 @@ export async function recordMessage(session: any, config: Config): Promise<void>
         console.error(`记录上传者消息到文件 ${fileName} 失败:`, error)
       }
       await flushCachedMessagesForFile(fileName)
-      if (recording.whitelistTimeout) {
-        clearTimeout(recording.whitelistTimeout)
-        recording.whitelistTimeout = undefined
-      }
+      // if (recording.whitelistTimeout) {
+      //   clearTimeout(recording.whitelistTimeout)
+      //   recording.whitelistTimeout = undefined
+      // }
     }
     return
   }
@@ -654,19 +622,19 @@ export async function recordMessage(session: any, config: Config): Promise<void>
           }
           await fileManager.addMessageToRecord(fileName, messageRecord)
           recording.lastWhitelistReplyTime = Date.now()
-          if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
-          recording.whitelistTimeout = setTimeout(() => {
-            if (recording.timeout) clearTimeout(recording.timeout)
-            activeRecordings.delete(fileName)
-            recentUploaderMessages.delete(fileName)
-            const channelFileSet = channelActiveFiles.get(session.channelId)
-            if (channelFileSet) {
-              channelFileSet.delete(fileName)
-              if (channelFileSet.size === 0) {
-                channelActiveFiles.delete(session.channelId)
-              }
-            }
-          }, WHITELIST_REPLY_TIMEOUT)
+          // if (recording.whitelistTimeout) clearTimeout(recording.whitelistTimeout)
+          // recording.whitelistTimeout = setTimeout(() => {
+          //   if (recording.timeout) clearTimeout(recording.timeout)
+          //   activeRecordings.delete(fileName)
+          //   recentUploaderMessages.delete(fileName)
+          //   const channelFileSet = channelActiveFiles.get(session.channelId)
+          //   if (channelFileSet) {
+          //     channelFileSet.delete(fileName)
+          //     if (channelFileSet.size === 0) {
+          //       channelActiveFiles.delete(session.channelId)
+          //     }
+          //   }
+          // }, WHITELIST_REPLY_TIMEOUT)
         } catch (error) {
           console.error(`记录白名单回复消息到文件 ${fileName} 失败:`, error)
         }
@@ -842,22 +810,65 @@ export function detectLauncherFromFile(fileName: string): LauncherName | null {
     cfg.pattern.test(fileName))?.[0] as LauncherName || null
 }
 
-// 定期清理过期缓存 - 每分钟执行一次
+// --- 全局定时器统一清理超时 ---
+// 每30秒执行一次
 setInterval(() => {
-  cleanupExpiredCache()
+  const now = Date.now();
+  // 1. 清理过期缓存
+  cleanupExpiredCache();
 
-  // 清理过期的文件上传者消息时间记录
-  const now = Date.now()
-  const expiredFiles: string[] = []
-
-  for (const [fileName, timestamp] of recentUploaderMessages) {
-    if (now - timestamp > UPLOADER_MESSAGE_WINDOW) {
-      expiredFiles.push(fileName)
+  // 2. 清理超时的活跃文件记录
+  for (const [fileName, recording] of activeRecordings) {
+    // 24小时未处理自动清理
+    if (now - recording.startTime > RECORDING_DURATION) {
+      activeRecordings.delete(fileName);
+      recentUploaderMessages.delete(fileName);
+      const channelFiles = channelActiveFiles.get(recording.channelId);
+      if (channelFiles) {
+        channelFiles.delete(fileName);
+        if (channelFiles.size === 0) channelActiveFiles.delete(recording.channelId);
+      }
+      // 清理相关缓存消息
+      const keysToDelete: string[] = [];
+      for (const [key, cache] of whitelistMessageCache) {
+        if (cache.relatedFiles.includes(fileName)) {
+          cache.relatedFiles = cache.relatedFiles.filter(f => f !== fileName);
+          if (cache.relatedFiles.length === 0) keysToDelete.push(key);
+        }
+      }
+      keysToDelete.forEach(key => whitelistMessageCache.delete(key));
+      continue;
+    }
+    // 3. 白名单回复超时（15分钟）
+    if (recording.lastWhitelistReplyTime && (now - recording.lastWhitelistReplyTime > WHITELIST_REPLY_TIMEOUT)) {
+      activeRecordings.delete(fileName);
+      recentUploaderMessages.delete(fileName);
+      const channelFiles = channelActiveFiles.get(recording.channelId);
+      if (channelFiles) {
+        channelFiles.delete(fileName);
+        if (channelFiles.size === 0) channelActiveFiles.delete(recording.channelId);
+      }
+      // 清理相关缓存消息
+      const keysToDelete: string[] = [];
+      for (const [key, cache] of whitelistMessageCache) {
+        if (cache.relatedFiles.includes(fileName)) {
+          cache.relatedFiles = cache.relatedFiles.filter(f => f !== fileName);
+          if (cache.relatedFiles.length === 0) keysToDelete.push(key);
+        }
+      }
+      keysToDelete.forEach(key => whitelistMessageCache.delete(key));
     }
   }
 
-  expiredFiles.forEach(fileName => recentUploaderMessages.delete(fileName))
-}, 60 * 1000)
+  // 4. 清理过期的文件上传者消息时间记录
+  const expiredFiles: string[] = [];
+  for (const [fileName, timestamp] of recentUploaderMessages) {
+    if (now - timestamp > UPLOADER_MESSAGE_WINDOW) {
+      expiredFiles.push(fileName);
+    }
+  }
+  expiredFiles.forEach(fileName => recentUploaderMessages.delete(fileName));
+}, 2 * 60 * 1000)
 
 /**
  * 动态关联未关联的缓存消息到新活跃的文件
