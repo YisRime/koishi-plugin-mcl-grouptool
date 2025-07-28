@@ -17,9 +17,8 @@ interface TargetInfo {
   uploaderId: string;
 }
 
-interface ActiveFileInfo {
+interface ActiveSessionInfo {
   recordId: string;
-  channelId: string;
   timestamp: number;
 }
 
@@ -29,7 +28,7 @@ interface ActiveFileInfo {
  */
 interface ServiceState {
   fileIndex: Record<string, string>;
-  userActiveFile: Record<string, ActiveFileInfo>;
+  activeFiles: Record<string, Record<string, ActiveSessionInfo>>;
 }
 
 const FILE_RECORD_GROUPS = ['666546887', '978054335', '958853931'] as const;
@@ -38,7 +37,7 @@ const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
 const CONVERSATION_TIMEOUT = 24 * 60 * 60 * 1000;
 const AMBIGUOUS_MESSAGE_PREFIX = '[交叉对话] ';
 const DATA_DIR = './data/mcl-grouptool';
-const STATE_FILE_PATH = join(DATA_DIR, 'mcl-grouptool.json');
+const STATE_FILE_PATH = join('./data/', 'mcl-grouptool.json');
 
 /**
  * 文件管理器类，负责所有物理文件的读写操作，并实现延迟创建目录。
@@ -57,7 +56,7 @@ class FileManager {
     await fs.writeFile(filePath, data);
   }
 
-  async createNewRecord(originalFileName: string, uploaderId: string, channelId: string): Promise<string> {
+  async createNewRecord(originalFileName: string, uploaderId: string): Promise<string> {
     const { name, ext } = parse(originalFileName);
     let count = 1;
     let recordId = originalFileName;
@@ -66,7 +65,7 @@ class FileManager {
       count++;
     }
     const recordPath = join(DATA_DIR, `${recordId}.json`);
-    const initialRecord = { recordId, uploaderId, channelId, uploadTime: new Date().toISOString(), messages: [] as MessageRecord[] };
+    const initialRecord = { recordId, uploaderId, messages: [] as MessageRecord[] };
     await this.writeFile(recordPath, JSON.stringify(initialRecord, null, 2));
     return recordId;
   }
@@ -116,7 +115,7 @@ class FileManager {
 export class FileRecordService {
   private fileManager = new FileManager();
   private fileIndex: Record<string, string> = {};
-  private userActiveFile: Record<string, ActiveFileInfo> = {};
+  private activeFiles: Record<string, Record<string, ActiveSessionInfo>> = {};
 
   constructor(private ctx: Context, private config: Config) {
     this.loadState().catch(error => { ctx.logger.error('初始化状态失败:', error); });
@@ -140,17 +139,8 @@ export class FileRecordService {
     const builtMessage = await this._buildMessageContent(session, primaryRecordId);
     if (!builtMessage) return;
     const finalContent = (targets.length > 1 ? AMBIGUOUS_MESSAGE_PREFIX : '') + builtMessage;
-    let stateChanged = false;
     for (const target of targets) {
       await this.fileManager.addMessageToRecord(target.recordId, { content: finalContent, userId: session.userId });
-      const activeInfo = this.userActiveFile[target.uploaderId];
-      if (activeInfo) {
-        activeInfo.timestamp = Date.now();
-        stateChanged = true;
-      }
-    }
-    if (stateChanged) {
-      await this.saveState();
     }
   }
 
@@ -158,36 +148,33 @@ export class FileRecordService {
     const { userId: currentUserId, channelId } = session;
     const now = Date.now();
     const isWithinTimeout = (timestamp: number) => now - timestamp <= CONVERSATION_TIMEOUT;
-
     const explicitTargetId = this._getTargetFromReplyOrMention(session);
+    const channelActiveFiles = this.activeFiles[channelId] || {};
 
     if (isUserWhitelisted(currentUserId, this.config)) {
       if (explicitTargetId) {
-        const targetInfo = this.userActiveFile[explicitTargetId];
-        if (targetInfo && targetInfo.channelId === channelId && isWithinTimeout(targetInfo.timestamp)) {
+        const targetInfo = channelActiveFiles[explicitTargetId];
+        if (targetInfo && isWithinTimeout(targetInfo.timestamp)) {
           return [{ recordId: targetInfo.recordId, uploaderId: explicitTargetId }];
         }
         return [];
       } else {
         // 白名单用户发言，查找当前频道所有活跃的会话
-        return Object.entries(this.userActiveFile)
-          .filter(([_, info]) => info.channelId === channelId && isWithinTimeout(info.timestamp))
+        return Object.entries(channelActiveFiles)
+          .filter(([_, info]) => isWithinTimeout(info.timestamp))
           .map(([uploaderId, info]) => ({ recordId: info.recordId, uploaderId }));
       }
     } else {
       // 普通用户发言
-      const uploaderInfo = this.userActiveFile[currentUserId];
-      if (!uploaderInfo || uploaderInfo.channelId !== channelId || !isWithinTimeout(uploaderInfo.timestamp)) {
+      const uploaderInfo = channelActiveFiles[currentUserId];
+      if (!uploaderInfo || !isWithinTimeout(uploaderInfo.timestamp)) {
         return [];
       }
-
-      // 只能回复自己的记录，或者在没有明确目标时默认发给自己的记录
-      // 如果回复的目标是白名单用户，则不处理（由白名单用户逻辑处理）
+      // 只能回复自己的记录，如果回复的目标不是自己，则不处理
       if (!explicitTargetId || explicitTargetId === currentUserId) {
         return [{ recordId: uploaderInfo.recordId, uploaderId: currentUserId }];
       }
     }
-
     return [];
   }
 
@@ -198,22 +185,28 @@ export class FileRecordService {
     const fileKey = `${fileName}_${fileSize}`;
     const now = Date.now();
 
+    if (!this.activeFiles[channelId]) {
+      this.activeFiles[channelId] = {};
+    }
+
     if (this.fileIndex[fileKey] && await this.fileManager.fileExists(`${this.fileIndex[fileKey]}.json`)) {
-      this.userActiveFile[uploaderId] = { recordId: this.fileIndex[fileKey], channelId, timestamp: now };
+      this.activeFiles[channelId][uploaderId] = { recordId: this.fileIndex[fileKey], timestamp: now };
       await this.saveState();
       return;
     }
 
-    const recordId = await this.fileManager.createNewRecord(fileName, uploaderId, channelId);
+    const recordId = await this.fileManager.createNewRecord(fileName, uploaderId);
     this.fileIndex[fileKey] = recordId;
-    this.userActiveFile[uploaderId] = { recordId, channelId, timestamp: now };
+    this.activeFiles[channelId][uploaderId] = { recordId, timestamp: now };
     await this.saveState();
 
     this.downloadFile(fileUrl, recordId).catch(async (error) => {
       this.ctx.logger.error(`后台下载失败，回滚记录 ${recordId}:`, error);
       await this.fileManager.deleteRecordFile(recordId);
       if (this.fileIndex[fileKey] === recordId) delete this.fileIndex[fileKey];
-      if (this.userActiveFile[uploaderId]?.recordId === recordId) delete this.userActiveFile[uploaderId];
+      if (this.activeFiles[channelId]?.[uploaderId]?.recordId === recordId) {
+        delete this.activeFiles[channelId][uploaderId];
+      }
       await this.saveState();
     });
   }
@@ -270,13 +263,13 @@ export class FileRecordService {
       const stateData = await fs.readFile(STATE_FILE_PATH, 'utf-8');
       const parsedState: ServiceState = JSON.parse(stateData);
       this.fileIndex = parsedState.fileIndex || {};
-      this.userActiveFile = parsedState.userActiveFile || {};
+      this.activeFiles = parsedState.activeFiles || {};
     } catch (error) {
       if (error.code !== 'ENOENT') {
         this.ctx.logger.warn('读取状态文件失败:', error);
       }
       this.fileIndex = {};
-      this.userActiveFile = {};
+      this.activeFiles = {};
     }
   }
 
@@ -284,7 +277,7 @@ export class FileRecordService {
     try {
       const state: ServiceState = {
         fileIndex: this.fileIndex,
-        userActiveFile: this.userActiveFile,
+        activeFiles: this.activeFiles,
       };
       await this.fileManager.writeFile(STATE_FILE_PATH, JSON.stringify(state, null, 2));
     } catch (error) {
