@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs'
 import { join, parse } from 'path'
 import { Context, Session } from 'koishi'
+import {} from 'koishi-plugin-adapter-onebot'
 import { Config } from '../index'
 import { isUserWhitelisted } from '../utils'
 
@@ -57,7 +58,7 @@ class FileManager {
       record.messages.push(message);
       await fs.writeFile(recordPath, JSON.stringify(record, null, 2), 'utf-8');
     } catch (error) {
-      console.error(`[MCL-GroupTool] 无法向记录 ${recordId}.json 中添加消息:`, error);
+      console.error(`无法向记录 ${recordId}.json 中添加消息:`, error);
     }
   }
 
@@ -95,62 +96,39 @@ export class FileRecordService {
     let fileUrl: string;
 
     try {
-      const msg = await session.bot.internal.getMessage(session.channelId, session.messageId);
-      const fileData = msg.message?.find(el => el.type === 'file')?.data;
+      const msg = await session.onebot.getMsg(session.messageId);
+      // 修复: 检查 msg.message 是否为数组
+      const fileData = Array.isArray(msg.message)
+        ? msg.message.find(el => el.type === 'file')?.data
+        : null;
+
       if (!fileData || !fileData.file || !fileData.file_size) {
-        this.ctx.logger.warn(`[MCL-GroupTool] getMessage API did not return valid file data for message ${session.messageId}`);
+        this.ctx.logger.warn(`onebot.getMsg API did not return valid file data for message ${session.messageId}`);
         return;
       }
       fileName = fileData.file;
       fileSize = parseInt(fileData.file_size, 10);
       fileUrl = fileData.url;
     } catch (error) {
-      this.ctx.logger.warn(`[MCL-GroupTool] 调用 getMessage API 失败，将回退到基本属性:`, error);
+      this.ctx.logger.warn(`调用 onebot.getMsg API 失败，将回退到基本属性:`, error);
       fileName = fileElement.attrs.file;
       fileSize = parseInt(fileElement.attrs.file_size || fileElement.attrs['file-size'] || '0', 10);
       fileUrl = fileElement.attrs.src;
     }
 
     if (!fileName || !fileUrl) {
-      this.ctx.logger.warn(`[MCL-GroupTool] 无法从消息元素中获取文件名或URL.`);
+      this.ctx.logger.warn(`无法从消息元素中获取文件名或URL.`);
       return;
     }
 
-    if (fileSize > 16 * 1024 * 1024 || !this.hasAllowedExtension(fileName)) return;
-
-    const fileKey = `${fileName}_${fileSize}`;
-    let recordId = this.fileIndex[fileKey];
-    let stateChanged = false;
-
-    if (recordId && await this.fileManager.fileExists(`${recordId}.json`)) {
-      this.ctx.logger.info(`[MCL-GroupTool] 检测到重复文件: ${fileName}.`);
-    } else {
-      this.ctx.logger.info(`[MCL-GroupTool] 检测到新文件: ${fileName}, 正在创建新记录...`);
-      recordId = await this.fileManager.createNewRecord(fileName, session.userId, session.channelId);
-      const downloadResult = await this.downloadFile(fileUrl, recordId);
-      if (!downloadResult) {
-        this.ctx.logger.error(`无法下载文件，记录ID: ${recordId}`);
-        return;
-      }
-      this.fileIndex[fileKey] = recordId;
-      stateChanged = true;
-    }
-
-    if (this.userActiveFile[session.userId] !== recordId) {
-      this.userActiveFile[session.userId] = recordId;
-      stateChanged = true;
-    }
-
-    if (stateChanged) {
-      await this.saveState();
-    }
+    await this._processAndRecordFile(fileName, fileSize, fileUrl, session.userId, session.channelId);
   }
 
   /**
    * 处理聊天消息，进行调度。
    */
   public async handleMessage(session: Session): Promise<void> {
-    const targets = this._findTargetRecordInfos(session);
+    const targets = await this._findTargetRecordInfos(session);
     if (targets.length === 0) return;
 
     const primaryRecordId = targets[0].recordId;
@@ -174,19 +152,44 @@ export class FileRecordService {
   /**
    * 核心逻辑：根据消息上下文查找所有相关的目标档案。
    */
-  private _findTargetRecordInfos(session: Session): TargetInfo[] {
-    const { userId: currentUserId, channelId } = session;
+  private async _findTargetRecordInfos(session: Session): Promise<TargetInfo[]> {
+    const { userId: currentUserId, channelId, event } = session;
 
-    // 1. 检查显式上下文 (@优先于回复)
     const explicitTargetId = this._getTargetFromReplyOrMention(session);
     if (explicitTargetId) {
-      const recordId = this.userActiveFile[explicitTargetId];
+      let recordId = this.userActiveFile[explicitTargetId];
+
+      const quote = (event as any).message?.quote;
+      if (!recordId && quote?.id && (isUserWhitelisted(currentUserId, this.config) || currentUserId === explicitTargetId)) {
+        this.ctx.logger.info(`用户 ${explicitTargetId} 没有活跃文件，正在尝试从引用消息 ${quote.id} 中获取文件...`);
+        try {
+          const originalMessage = await session.onebot.getMsg(quote.id);
+          // 修复: 检查 originalMessage.message 是否为数组
+          const fileData = Array.isArray(originalMessage.message)
+            ? originalMessage.message.find(el => el.type === 'file')?.data
+            : null;
+
+          if (fileData && fileData.file && fileData.file_size && fileData.url) {
+            const fileName = fileData.file;
+            const fileSize = parseInt(fileData.file_size, 10);
+            const fileUrl = fileData.url;
+
+            recordId = await this._processAndRecordFile(fileName, fileSize, fileUrl, explicitTargetId, channelId);
+
+            if (recordId) {
+              this.ctx.logger.info(`成功从引用消息中补录文件，记录ID: ${recordId}`);
+            }
+          }
+        } catch (error) {
+          this.ctx.logger.warn(`无法获取或处理引用的文件消息 ${quote.id}:`, error);
+        }
+      }
+
       if (recordId && (isUserWhitelisted(currentUserId, this.config) || currentUserId === explicitTargetId)) {
         return [{ recordId, uploaderId: explicitTargetId }];
       }
     }
 
-    // 2. 检查隐式上下文 (无引用跟进)
     const uploaderRecordId = this.userActiveFile[currentUserId];
     if (uploaderRecordId) {
       return [{ recordId: uploaderRecordId, uploaderId: currentUserId }];
@@ -203,6 +206,42 @@ export class FileRecordService {
     }
 
     return [];
+  }
+
+  /**
+   * 核心文件处理与记录逻辑。
+   */
+  private async _processAndRecordFile(fileName: string, fileSize: number, fileUrl: string, uploaderId: string, channelId: string): Promise<string | null> {
+    if (fileSize > 16 * 1024 * 1024 || !this.hasAllowedExtension(fileName)) {
+      return null;
+    }
+
+    const fileKey = `${fileName}_${fileSize}`;
+    let recordId = this.fileIndex[fileKey];
+    let stateChanged = false;
+
+    if (recordId && await this.fileManager.fileExists(`${recordId}.json`)) {
+    } else {
+      recordId = await this.fileManager.createNewRecord(fileName, uploaderId, channelId);
+      const downloadResult = await this.downloadFile(fileUrl, recordId);
+      if (!downloadResult) {
+        this.ctx.logger.error(`无法下载文件，记录ID: ${recordId}`);
+        return null;
+      }
+      this.fileIndex[fileKey] = recordId;
+      stateChanged = true;
+    }
+
+    if (this.userActiveFile[uploaderId] !== recordId) {
+      this.userActiveFile[uploaderId] = recordId;
+      stateChanged = true;
+    }
+
+    if (stateChanged) {
+      await this.saveState();
+    }
+
+    return recordId;
   }
 
   /**
@@ -224,7 +263,6 @@ export class FileRecordService {
         case 'reply':
           break;
         case 'img':
-          // 过滤QQ动画表情
           if (element.attrs.summary === '[动画表情]') continue;
 
           hasMeaningfulContent = true;
@@ -301,7 +339,7 @@ export class FileRecordService {
       await fs.writeFile(downloadPath, Buffer.from(response));
       return { path: downloadPath, size: response.byteLength };
     } catch (error) {
-      this.ctx.logger.warn(`[MCL-GroupTool] 文件下载失败: ${newFileNameOnDisk}`, error);
+      this.ctx.logger.warn(`文件下载失败: ${newFileNameOnDisk}`, error);
       return null;
     }
   }
