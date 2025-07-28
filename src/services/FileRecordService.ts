@@ -8,7 +8,6 @@ import { isUserWhitelisted } from '../utils'
 interface MessageRecord {
   content: string;
   userId: string;
-  timestamp: number;
 }
 interface TargetInfo {
   recordId: string;
@@ -21,8 +20,7 @@ const CONVERSATION_TIMEOUT = 5 * 60 * 1000;
 const AMBIGUOUS_MESSAGE_PREFIX = '[交叉对话] ';
 
 const DATA_DIR = './data/mcl-grouptool';
-const FILE_INDEX_PATH = join(DATA_DIR, 'mcl-file-index.json');
-const USER_ACTIVE_FILE_PATH = join('./data', 'mcl-user-active-file.json');
+const STATE_FILE_PATH = join('./data', 'mcl-grouptool.json');
 
 // 文件管理器类，负责所有物理文件的读写操作
 class FileManager {
@@ -122,6 +120,7 @@ export class FileRecordService {
 
     const fileKey = `${fileName}_${fileSize}`;
     let recordId = this.fileIndex[fileKey];
+    let stateChanged = false;
 
     if (recordId && await this.fileManager.fileExists(`${recordId}.json`)) {
       this.ctx.logger.info(`[MCL-GroupTool] 检测到重复文件: ${fileName}.`);
@@ -134,11 +133,17 @@ export class FileRecordService {
         return;
       }
       this.fileIndex[fileKey] = recordId;
-      await this.saveFileIndex();
+      stateChanged = true;
     }
 
-    this.userActiveFile[session.userId] = recordId;
-    await this.saveUserActiveFile();
+    if (this.userActiveFile[session.userId] !== recordId) {
+      this.userActiveFile[session.userId] = recordId;
+      stateChanged = true;
+    }
+
+    if (stateChanged) {
+      await this.saveState();
+    }
   }
 
   /**
@@ -159,7 +164,6 @@ export class FileRecordService {
       await this.fileManager.addMessageToRecord(target.recordId, {
         content: finalContent,
         userId: session.userId,
-        timestamp: session.timestamp,
       });
       this.updateConversationTimestamp(session.channelId, target.uploaderId);
     }
@@ -303,9 +307,22 @@ export class FileRecordService {
   }
 
   private async loadState(): Promise<void> {
-    try { this.fileIndex = JSON.parse(await fs.readFile(FILE_INDEX_PATH, 'utf-8')); } catch { this.fileIndex = {}; }
-    try { this.userActiveFile = JSON.parse(await fs.readFile(USER_ACTIVE_FILE_PATH, 'utf-8')); } catch { this.userActiveFile = {}; }
+    try {
+      const stateData = await fs.readFile(STATE_FILE_PATH, 'utf-8');
+      const parsedState = JSON.parse(stateData);
+      this.fileIndex = parsedState.fileIndex || {};
+      this.userActiveFile = parsedState.userActiveFile || {};
+    } catch {
+      this.fileIndex = {};
+      this.userActiveFile = {};
+    }
   }
-  private async saveFileIndex(): Promise<void> { await fs.writeFile(FILE_INDEX_PATH, JSON.stringify(this.fileIndex, null, 2)); }
-  private async saveUserActiveFile(): Promise<void> { await fs.writeFile(USER_ACTIVE_FILE_PATH, JSON.stringify(this.userActiveFile, null, 2)); }
+
+  private async saveState(): Promise<void> {
+    const state = {
+      fileIndex: this.fileIndex,
+      userActiveFile: this.userActiveFile
+    };
+    await fs.writeFile(STATE_FILE_PATH, JSON.stringify(state, null, 2));
+  }
 }
