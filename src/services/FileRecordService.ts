@@ -161,10 +161,8 @@ export class FileRecordService {
 
       const quote = (event as any).message?.quote;
       if (!recordId && quote?.id && (isUserWhitelisted(currentUserId, this.config) || currentUserId === explicitTargetId)) {
-        this.ctx.logger.info(`用户 ${explicitTargetId} 没有活跃文件，正在尝试从引用消息 ${quote.id} 中获取文件...`);
         try {
           const originalMessage = await session.onebot.getMsg(quote.id);
-          // 修复: 检查 originalMessage.message 是否为数组
           const fileData = Array.isArray(originalMessage.message)
             ? originalMessage.message.find(el => el.type === 'file')?.data
             : null;
@@ -175,10 +173,6 @@ export class FileRecordService {
             const fileUrl = fileData.url;
 
             recordId = await this._processAndRecordFile(fileName, fileSize, fileUrl, explicitTargetId, channelId);
-
-            if (recordId) {
-              this.ctx.logger.info(`成功从引用消息中补录文件，记录ID: ${recordId}`);
-            }
           }
         } catch (error) {
           this.ctx.logger.warn(`无法获取或处理引用的文件消息 ${quote.id}:`, error);
