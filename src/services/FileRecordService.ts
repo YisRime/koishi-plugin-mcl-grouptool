@@ -20,9 +20,9 @@ const ALLOWED_EXTENSIONS = ['.zip', '.log', '.txt', '.json', '.gz', '.xz'];
 const CONVERSATION_TIMEOUT = 5 * 60 * 1000;
 const AMBIGUOUS_MESSAGE_PREFIX = '[交叉对话] ';
 
-const DATA_DIR = './data';
-const FILE_INDEX_PATH = join(DATA_DIR, 'mcl-grouptool-file-index.json');
-const USER_ACTIVE_FILE_PATH = join(DATA_DIR, 'mcl-grouptool-user-active-file.json');
+const DATA_DIR = './data/mcl-grouptool';
+const FILE_INDEX_PATH = join(DATA_DIR, 'mcl-file-index.json');
+const USER_ACTIVE_FILE_PATH = join('./data', 'mcl-user-active-file.json');
 
 // 文件管理器类，负责所有物理文件的读写操作
 class FileManager {
@@ -46,7 +46,7 @@ class FileManager {
     }
 
     const recordPath = join(DATA_DIR, `${recordId}${jsonExt}`);
-    const initialRecord = { recordId, originalFileName, uploaderId, channelId, uploadTime: new Date().toISOString(), messages: [] as MessageRecord[] };
+    const initialRecord = { recordId, uploaderId, channelId, uploadTime: new Date().toISOString(), messages: [] as MessageRecord[] };
     await fs.writeFile(recordPath, JSON.stringify(initialRecord, null, 2), 'utf-8');
     return recordId;
   }
@@ -92,9 +92,31 @@ export class FileRecordService {
   public async handleFile(fileElement: any, session: Session): Promise<void> {
     if (!this.isFileRecordAllowed(session.channelId)) return;
 
-    const fileName = fileElement.attrs.file || `file_${Date.now()}`;
-    const fileSize = parseInt(fileElement.attrs.file_size || fileElement.attrs['file-size'] || '0', 10);
-    const fileUrl = fileElement.attrs.src;
+    let fileName: string;
+    let fileSize: number;
+    let fileUrl: string;
+
+    try {
+      const msg = await session.bot.internal.getMessage(session.channelId, session.messageId);
+      const fileData = msg.message?.find(el => el.type === 'file')?.data;
+      if (!fileData || !fileData.file || !fileData.file_size) {
+        this.ctx.logger.warn(`[MCL-GroupTool] getMessage API did not return valid file data for message ${session.messageId}`);
+        return;
+      }
+      fileName = fileData.file;
+      fileSize = parseInt(fileData.file_size, 10);
+      fileUrl = fileData.url;
+    } catch (error) {
+      this.ctx.logger.warn(`[MCL-GroupTool] 调用 getMessage API 失败，将回退到基本属性:`, error);
+      fileName = fileElement.attrs.file;
+      fileSize = parseInt(fileElement.attrs.file_size || fileElement.attrs['file-size'] || '0', 10);
+      fileUrl = fileElement.attrs.src;
+    }
+
+    if (!fileName || !fileUrl) {
+      this.ctx.logger.warn(`[MCL-GroupTool] 无法从消息元素中获取文件名或URL.`);
+      return;
+    }
 
     if (fileSize > 16 * 1024 * 1024 || !this.hasAllowedExtension(fileName)) return;
 
@@ -250,7 +272,7 @@ export class FileRecordService {
     const mention = session.elements?.find(el => el.type === 'at');
     if (mention?.attrs?.id) return mention.attrs.id;
 
-    const quote = session.event.message.quote;
+    const quote = (session.event as any).message?.quote;
     if (quote?.user?.id) return quote.user.id;
 
     return null;
