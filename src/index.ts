@@ -5,6 +5,7 @@ import { FileRecordService } from './services/FileRecordService'
 import { FileReplyService } from './services/FileReplyService'
 import { KeywordReplyService } from './services/KeywordReplyService'
 import { ForwardingService } from './services/ForwardingService'
+import { isUserWhitelisted } from './utils'
 
 export const name = 'mcl-grouptool'
 
@@ -34,6 +35,8 @@ export interface Config {
   whitelist?: string[]
   fileRecord?: boolean
   additionalGroups?: string[]
+  recordTimeout?: number
+  conversationTimeout?: number
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -48,9 +51,11 @@ export const Config: Schema<Config> = Schema.intersect([
     preventDup: Schema.boolean().default(true).description('延迟发送提示'),
     quote: Schema.boolean().default(true).description('回复时引用消息'),
     mention: Schema.boolean().default(false).description('回复时@用户'),
+    recordTimeout: Schema.number().default(2 * 60 * 1000).description('记录时长'),
+    conversationTimeout: Schema.number().default(10 * 60 * 1000).description('会话时长'),
     forwardTarget: Schema.string().description('转发目标群'),
     additionalGroups: Schema.array(Schema.string()).description('报告记录群').role('table'),
-    whitelist: Schema.array(Schema.string()).description('白名单用户').role('table')
+    whitelist: Schema.array(Schema.string()).description('白名单用户').role('table'),
   }).description('通用配置'),
 ])
 
@@ -59,14 +64,81 @@ export function apply(ctx: Context, config: Config) {
 
   // 实例化所有可能用到的服务，并传入数据路径
   const fileReplyService = config.fileReply ? new FileReplyService(ctx, config) : null
-  const keywordReplyService = (config.keywordReply || config.ocrReply) ? new KeywordReplyService(ctx, config, dataPath) : null
+  const keywordReplyService = config.keywordReply || config.ocrReply ? new KeywordReplyService(ctx, config, dataPath) : null
   const forwardingService = config.enableForward ? new ForwardingService(ctx, config, dataPath) : null
   const fileRecordService = config.fileRecord ? new FileRecordService(ctx, config, dataPath) : null
+
+  // 注册主命令
+  const mcl = ctx.command('mcl', 'MCL 群组工具集').action(async () => {
+    return usage
+  })
+
+  // 注册关键词回复子命令
+  if (keywordReplyService) {
+    mcl
+      .subcommand('.send <regexPattern:string> [target:string]', '发送预设回复')
+      .action(async ({ session }, regexPattern, target) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!regexPattern) return '请提供正则表达式。'
+        return keywordReplyService.executeSend(session, regexPattern, target)
+      })
+
+    mcl
+      .subcommand('.list', '查看文本关键词列表')
+      .action(({ session }) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        return keywordReplyService.listKeywords()
+      })
+
+    mcl
+      .subcommand('.add <regex:string> <reply:text>', '添加文本关键词')
+      .action(async ({ session }, regex, reply) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!regex || !reply) return '请提供正则表达式和回复内容。'
+        return keywordReplyService.addKeyword(regex, reply)
+      })
+
+    mcl
+      .subcommand('.remove <regex:string>', '删除文本关键词')
+      .action(async ({ session }, regex) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!regex) return '请提供要删除的正则表达式。'
+        return keywordReplyService.removeKeyword(regex)
+      })
+  }
+
+  // 注册转发关键词子命令
+  if (forwardingService) {
+    const fwd = mcl.subcommand('.fwd', '转发关键词管理')
+
+    fwd
+      .subcommand('.list', '查看转发关键词列表')
+      .action(({ session }) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        return forwardingService.listFwdKeywords()
+      })
+
+    fwd
+      .subcommand('.add <regex:string>', '添加转发关键词')
+      .action(async ({ session }, regex) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!regex) return '请提供要添加的正则表达式。'
+        return forwardingService.addFwdKeyword(regex)
+      })
+
+    fwd
+      .subcommand('.remove <regex:string>', '删除转发关键词')
+      .action(async ({ session }, regex) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!regex) return '请提供要删除的正则表达式。'
+        return forwardingService.removeFwdKeyword(regex)
+      })
+  }
 
   // 仅在开启了任何一个功能时才注册消息监听器
   const needsMessageListener = fileReplyService || keywordReplyService || forwardingService || fileRecordService
   if (needsMessageListener) {
-    ctx.on('message', async (session) => {
+    ctx.on('message', async session => {
       try {
         // 文件下载和记录（如果启用）
         if (fileRecordService) {
@@ -91,7 +163,6 @@ export function apply(ctx: Context, config: Config) {
         if (keywordReplyService) {
           await keywordReplyService.handleMessage(session)
         }
-
       } catch (error) {
         ctx.logger.warn('处理消息时发生错误:', error)
       }

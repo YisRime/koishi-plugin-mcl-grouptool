@@ -15,7 +15,6 @@ export class KeywordReplyService {
   constructor(private ctx: Context, private config: Config, dataPath: string) {
     this.keywordsFilePath = join(dataPath, 'keywords.json')
     this.loadKeywords().catch(err => ctx.logger.error('加载文本关键词失败:', err))
-    this.registerCommands()
   }
 
   private async loadKeywords(): Promise<void> {
@@ -26,44 +25,48 @@ export class KeywordReplyService {
     await saveJsonFile(this.keywordsFilePath, this.keywords)
   }
 
-  private registerCommands(): void {
-    this.ctx
-      .command('send <regexPattern> [target]', '发送预设回复')
-      .option('list', '-l 查看关键词列表')
-      .option('reload', '-r 重新加载关键词')
-      .action(async ({ session, options }, regexPattern, target) => {
-        if (!isUserWhitelisted(session.userId, this.config)) return
+  public async executeSend(session: Session, regexPattern: string, target?: string): Promise<string> {
+    const kw = this.keywords.find(k => k.regex === regexPattern)
+    if (!kw) return `未找到正则表达式 "${regexPattern}" 的配置。`
 
-        if (options.reload) {
-          await this.loadKeywords()
-          return '文本关键词列表已重新加载。'
-        }
+    let targetUserId: string | null = null
+    if (target) {
+      const at = h.select(h.parse(target), 'at')[0]?.attrs?.id
+      targetUserId = at || target.match(/@?(\d{5,10})/)?.[1] || null
+    }
 
-        if (options.list) {
-          if (!this.keywords.length) return '当前没有配置任何文本关键词。\n请在 ' + this.keywordsFilePath + ' 文件中配置。'
-          const keywordList = this.keywords.map((kw, index) => `${index + 1}. ${kw.regex}`).join('\n')
-          return `可用关键词列表：\n${keywordList}\n\n使用方法: send <正则表达式> [目标用户]`
-        }
+    try {
+      await session.send(buildReplyElements(session, kw.reply, targetUserId, this.config))
+      return '' // No-op reply on success
+    } catch (error) {
+      this.ctx.logger.error('发送预设回复失败:', error)
+      return '发送预设回复失败。'
+    }
+  }
 
-        if (!regexPattern) return '请提供正则表达式。\n使用 send -l 查看可用关键词列表。'
+  public listKeywords(): string {
+    if (!this.keywords.length) return '当前没有配置任何文本关键词。'
+    const keywordList = this.keywords.map((kw, index) => `${index + 1}. Regex: ${kw.regex}\n   Reply: ${kw.reply}`).join('\n')
+    return `可用关键词列表：\n${keywordList}`
+  }
 
-        const kw = this.keywords.find(k => k.regex === regexPattern)
-        if (!kw) return `未找到正则表达式 "${regexPattern}" 的配置。\n使用 send -l 查看可用关键词列表。`
+  public async addKeyword(regex: string, reply: string): Promise<string> {
+    if (this.keywords.some(kw => kw.regex === regex)) {
+      return `正则表达式 "${regex}" 已存在。`
+    }
+    this.keywords.push({ regex, reply })
+    await this.saveKeywords()
+    return `成功添加关键词 "${regex}"。`
+  }
 
-        let targetUserId: string | null = null
-        if (target) {
-          const at = h.select(h.parse(target), 'at')[0]?.attrs?.id
-          targetUserId = at || target.match(/@?(\d{5,10})/)?.[1] || null
-        }
-
-        try {
-          await session.send(buildReplyElements(session, kw.reply, targetUserId, this.config))
-          return '' // No-op reply on success
-        } catch (error) {
-          this.ctx.logger.error('发送预设回复失败:', error)
-          return '发送预设回复失败。'
-        }
-      })
+  public async removeKeyword(regex: string): Promise<string> {
+    const index = this.keywords.findIndex(kw => kw.regex === regex)
+    if (index === -1) {
+      return `未找到正则表达式 "${regex}"。`
+    }
+    this.keywords.splice(index, 1)
+    await this.saveKeywords()
+    return `成功删除关键词 "${regex}"。`
   }
 
   public async handleMessage(session: Session) {

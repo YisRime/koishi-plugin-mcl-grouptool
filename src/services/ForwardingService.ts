@@ -24,6 +24,31 @@ export class ForwardingService {
     await saveJsonFile(this.fwdKeywordsFilePath, this.fwdKeywords)
   }
 
+  public listFwdKeywords(): string {
+    if (!this.fwdKeywords.length) return '当前没有配置任何转发关键词。'
+    const keywordList = this.fwdKeywords.map((kw, index) => `${index + 1}. ${kw.regex}`).join('\n')
+    return `转发关键词列表：\n${keywordList}`
+  }
+
+  public async addFwdKeyword(regex: string): Promise<string> {
+    if (this.fwdKeywords.some(kw => kw.regex === regex)) {
+      return `转发关键词 "${regex}" 已存在。`
+    }
+    this.fwdKeywords.push({ regex })
+    await this.saveFwdKeywords()
+    return `成功添加转发关键词 "${regex}"。`
+  }
+
+  public async removeFwdKeyword(regex: string): Promise<string> {
+    const index = this.fwdKeywords.findIndex(kw => kw.regex === regex)
+    if (index === -1) {
+      return `未找到转发关键词 "${regex}"。`
+    }
+    this.fwdKeywords.splice(index, 1)
+    await this.saveFwdKeywords()
+    return `成功删除转发关键词 "${regex}"。`
+  }
+
   public async handleMessage(session: Session) {
     if (!this.config.forwardTarget) return
 

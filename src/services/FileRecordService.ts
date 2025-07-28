@@ -32,7 +32,6 @@ interface ServiceState {
 const FILE_RECORD_GROUPS = ['666546887', '978054335', '958853931'] as const
 const ALLOWED_EXTENSIONS = ['.zip', '.log', '.txt', '.json', '.gz', '.xz']
 const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png']
-const CONVERSATION_TIMEOUT = 15 * 60 * 1000
 const AMBIGUOUS_MESSAGE_PREFIX = '[交叉对话] '
 
 /**
@@ -47,7 +46,9 @@ export class FileRecordService {
   constructor(private ctx: Context, private config: Config, dataPath: string) {
     this.dataDir = join(dataPath, 'logs')
     this.stateFilePath = join(dataPath, 'logs_state.json')
-    this.loadState().catch(error => { ctx.logger.error('初始化状态失败:', error) })
+    this.loadState().catch(error => {
+      ctx.logger.error('初始化状态失败:', error)
+    })
   }
 
   public async handleFile(fileElement: any, session: Session): Promise<void> {
@@ -62,6 +63,7 @@ export class FileRecordService {
 
   public async handleMessage(session: Session): Promise<void> {
     if (!this.isFileRecordAllowed(session.channelId)) return
+
     const targets = await this._findTargetRecordInfos(session)
     if (targets.length === 0) return
 
@@ -70,8 +72,20 @@ export class FileRecordService {
     if (!builtMessage) return
 
     const finalContent = (targets.length > 1 ? AMBIGUOUS_MESSAGE_PREFIX : '') + builtMessage
+    const now = Date.now()
+    let stateChanged = false
+
     for (const target of targets) {
       await this._addMessageToRecord(target.recordId, { content: finalContent, userId: session.userId })
+      const activeSession = this.activeFiles[session.channelId]?.[target.uploaderId]
+      if (activeSession && activeSession.recordId === target.recordId) {
+        activeSession.timestamp = now
+        stateChanged = true
+      }
+    }
+
+    if (stateChanged) {
+      await this.saveState()
     }
   }
 
@@ -81,27 +95,30 @@ export class FileRecordService {
   private async _findTargetRecordInfos(session: Session): Promise<TargetInfo[]> {
     const { userId: currentUserId, channelId } = session
     const now = Date.now()
-    const isWithinTimeout = (timestamp: number) => now - timestamp <= CONVERSATION_TIMEOUT
     const explicitTargetId = this._getTargetFromReplyOrMention(session)
     const channelActiveFiles = this.activeFiles[channelId] || {}
 
     if (isUserWhitelisted(currentUserId, this.config)) {
       if (explicitTargetId) {
         const targetInfo = channelActiveFiles[explicitTargetId]
-        if (targetInfo && isWithinTimeout(targetInfo.timestamp)) {
+        if (targetInfo && now - targetInfo.timestamp <= this.config.conversationTimeout) {
           return [{ recordId: targetInfo.recordId, uploaderId: explicitTargetId }]
         }
-        return []
+        return [] // 目标会话已彻底失效
       } else {
+        // 白名单用户的交叉对话，只记录到处于“活跃讨论期”的会话
         return Object.entries(channelActiveFiles)
-          .filter(([_, info]) => isWithinTimeout(info.timestamp))
+          .filter(([_, info]) => now - info.timestamp <= this.config.recordTimeout)
           .map(([uploaderId, info]) => ({ recordId: info.recordId, uploaderId }))
       }
     } else {
+      // 普通用户的发言
       const uploaderInfo = channelActiveFiles[currentUserId]
-      if (!uploaderInfo || !isWithinTimeout(uploaderInfo.timestamp)) {
+      // 检查用户是否有会话，以及会话是否彻底失效
+      if (!uploaderInfo || now - uploaderInfo.timestamp > this.config.conversationTimeout) {
         return []
       }
+      // 普通用户只能在自己的会话中发言（不能是回复别人）
       if (!explicitTargetId || explicitTargetId === currentUserId) {
         return [{ recordId: uploaderInfo.recordId, uploaderId: currentUserId }]
       }
@@ -227,8 +244,8 @@ export class FileRecordService {
     await saveJsonFile(this.stateFilePath, state)
   }
 
-  private _getTargetFromReplyOrMention = (session: Session): string | null => session.elements.find(el => el.type === 'at')?.attrs?.id ?? (session.event as any).message?.quote?.user?.id ?? null;
-  private isFileRecordAllowed = (channelId: string): boolean => [...FILE_RECORD_GROUPS, ...(this.config.additionalGroups || [])].includes(channelId);
-  private hasAllowedExtension = (fileName: string): boolean => ALLOWED_EXTENSIONS.some(ext => fileName.toLowerCase().endsWith(ext));
-  private _isAllowedImageExtension = (fileName: string): boolean => ALLOWED_IMAGE_EXTENSIONS.some(ext => fileName.toLowerCase().endsWith(ext));
+  private _getTargetFromReplyOrMention = (session: Session): string | null => session.elements.find(el => el.type === 'at')?.attrs?.id ?? (session.event as any).message?.quote?.user?.id ?? null
+  private isFileRecordAllowed = (channelId: string): boolean => [...FILE_RECORD_GROUPS, ...(this.config.additionalGroups || [])].includes(channelId)
+  private hasAllowedExtension = (fileName: string): boolean => ALLOWED_EXTENSIONS.some(ext => fileName.toLowerCase().endsWith(ext))
+  private _isAllowedImageExtension = (fileName: string): boolean => ALLOWED_IMAGE_EXTENSIONS.some(ext => fileName.toLowerCase().endsWith(ext))
 }
