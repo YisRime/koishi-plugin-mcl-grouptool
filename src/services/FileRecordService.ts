@@ -34,10 +34,10 @@ interface ServiceState {
 const FILE_RECORD_GROUPS = ['666546887', '978054335', '958853931'] as const;
 const ALLOWED_EXTENSIONS = ['.zip', '.log', '.txt', '.json', '.gz', '.xz'];
 const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
-const CONVERSATION_TIMEOUT = 24 * 60 * 60 * 1000;
+const CONVERSATION_TIMEOUT = 15 * 60 * 1000;
 const AMBIGUOUS_MESSAGE_PREFIX = '[交叉对话] ';
-const DATA_DIR = './data/mcl-grouptool';
-const STATE_FILE_PATH = join('./data/', 'mcl-grouptool.json');
+const DATA_DIR = './data/mcl-grouptool/logs';
+const STATE_FILE_PATH = join('./data/mcl-grouptool/', 'logs_state.json');
 
 /**
  * 文件管理器类，负责所有物理文件的读写操作，并实现延迟创建目录。
