@@ -1,31 +1,40 @@
+import { join } from 'path'
 import { Context, Session } from 'koishi'
 import { Config } from '../index'
-import { handleOCR } from '../utils'
+import { loadJsonFile, saveJsonFile } from '../utils'
+
+interface FwdKeywordConfig {
+  regex: string
+}
 
 export class ForwardingService {
-  constructor(private ctx: Context, private config: Config) {}
+  private fwdKeywords: FwdKeywordConfig[] = []
+  private fwdKeywordsFilePath: string
+
+  constructor(private ctx: Context, private config: Config, dataPath: string) {
+    this.fwdKeywordsFilePath = join(dataPath, 'fwd_keywords.json')
+    this.loadFwdKeywords().catch(err => ctx.logger.error('加载转发关键词失败:', err))
+  }
+
+  private async loadFwdKeywords(): Promise<void> {
+    this.fwdKeywords = await loadJsonFile(this.fwdKeywordsFilePath, [])
+  }
+
+  private async saveFwdKeywords(): Promise<void> {
+    await saveJsonFile(this.fwdKeywordsFilePath, this.fwdKeywords)
+  }
 
   public async handleMessage(session: Session) {
     if (!this.config.forwardTarget) return
 
-    const { elements, content } = session
+    const { content } = session
 
-    // 如果设置了转发关键词，但消息内容不匹配，则不转发
-    if (this.config.fwdKeywords?.length && content && !this.config.fwdKeywords.some(kw => kw.regex && new RegExp(kw.regex, 'i').test(content))) {
+    if (this.fwdKeywords?.length && content && !this.fwdKeywords.some(kw => kw.regex && new RegExp(kw.regex, 'i').test(content))) {
       return
     }
 
     const senderInfo = `${session.userId}（${session.guildId || session.channelId}）`
-    const imageElement = elements?.find(el => el.type === 'img')
 
-    if (imageElement && this.config.forwardOcr) {
-      const ocrText = await handleOCR(imageElement, session)
-      if (ocrText) {
-        await session.bot.sendMessage(this.config.forwardTarget, `${senderInfo}\n${ocrText}`)
-      }
-    }
-
-    // 只要有文本内容就转发
     if (content) {
       await session.bot.sendMessage(this.config.forwardTarget, `${senderInfo}\n${content}`)
     }

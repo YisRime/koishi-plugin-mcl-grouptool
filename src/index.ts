@@ -1,10 +1,9 @@
-import { Context, Schema, h } from 'koishi'
+import { Context, Schema } from 'koishi'
+import { join } from 'path'
 import {} from 'koishi-plugin-adapter-onebot'
-import { buildReplyElements, isUserWhitelisted } from './utils'
 import { FileRecordService } from './services/FileRecordService'
 import { FileReplyService } from './services/FileReplyService'
 import { KeywordReplyService } from './services/KeywordReplyService'
-import { OcrReplyService } from './services/OcrReplyService'
 import { ForwardingService } from './services/ForwardingService'
 
 export const name = 'mcl-grouptool'
@@ -23,28 +22,16 @@ export const usage = `
 </div>
 `
 
-/**
- * 关键词配置接口
- */
-interface KeywordConfig {
-  regex: string
-  reply: string
-}
-
 export interface Config {
   preventDup?: boolean
   mention?: boolean
   quote?: boolean
   fileReply?: boolean
   keywordReply?: boolean
-  keywords?: KeywordConfig[]
-  ocrKeywords?: KeywordConfig[]
-  fwdKeywords?: { regex: string }[]
+  ocrReply?: boolean
   enableForward?: boolean
   forwardTarget?: string
   whitelist?: string[]
-  ocrReply?: boolean
-  forwardOcr?: boolean
   fileRecord?: boolean
   additionalGroups?: string[]
 }
@@ -54,9 +41,8 @@ export const Config: Schema<Config> = Schema.intersect([
     fileReply: Schema.boolean().default(false).description('启用报错指引'),
     fileRecord: Schema.boolean().default(false).description('启用报告记录'),
     keywordReply: Schema.boolean().default(false).description('启用关键词回复'),
-    ocrReply: Schema.boolean().default(false).description('启用图片识别'),
+    ocrReply: Schema.boolean().default(false).description('启用 OCR 识别'),
     enableForward: Schema.boolean().default(false).description('启用消息转发'),
-    forwardOcr: Schema.boolean().default(false).description('转发图片识别')
   }).description('开关配置'),
   Schema.object({
     preventDup: Schema.boolean().default(true).description('延迟发送提示'),
@@ -65,59 +51,20 @@ export const Config: Schema<Config> = Schema.intersect([
     forwardTarget: Schema.string().description('转发目标群'),
     additionalGroups: Schema.array(Schema.string()).description('报告记录群').role('table'),
     whitelist: Schema.array(Schema.string()).description('白名单用户').role('table')
-  }).description('参数配置'),
-  Schema.object({
-    keywords: Schema.array(Schema.object({
-      regex: Schema.string().description('正则表达式'),
-      reply: Schema.string().description('回复内容')
-    })).description('回复关键词').role('table'),
-    ocrKeywords: Schema.array(Schema.object({
-      regex: Schema.string().description('正则表达式'),
-      reply: Schema.string().description('回复内容')
-    })).description('OCR 关键词').role('table'),
-    fwdKeywords: Schema.array(Schema.object({
-      regex: Schema.string().description('正则表达式')
-    })).description('转发关键词').role('table')
-  }).description('关键词配置')
+  }).description('通用配置'),
 ])
 
 export function apply(ctx: Context, config: Config) {
-  // 实例化所有可能用到的服务
-  const fileReplyService = config.fileReply ? new FileReplyService(ctx, config) : null
-  const keywordReplyService = config.keywordReply ? new KeywordReplyService(ctx, config) : null
-  const ocrReplyService = config.ocrReply ? new OcrReplyService(ctx, config) : null
-  const forwardingService = config.enableForward ? new ForwardingService(ctx, config) : null
-  const fileRecordService = config.fileRecord ? new FileRecordService(ctx, config) : null
+  const dataPath = join(ctx.baseDir, 'data', name)
 
-  // 仅在有预设回复时注册 send 命令
-  if (config.keywords?.length) {
-    ctx.command('send <regexPattern> [target]', '发送预设回复')
-      .option('list', '-l 查看关键词列表')
-      .action(async ({ session, options }, regexPattern, target) => {
-        if (!isUserWhitelisted(session.userId, config)) return
-        if (options.list) {
-          const keywordList = config.keywords.map((kw, index) => `${index + 1}. ${kw.regex}`).join('\n')
-          return `可用关键词列表：\n${keywordList}\n\n使用方法: send <正则表达式> [目标用户]`
-        }
-        if (!regexPattern) return '请提供正则表达式\n使用 send -l 查看可用关键词列表'
-        const kw = config.keywords.find(k => k.regex === regexPattern)
-        if (!kw) return `未找到正则表达式 "${regexPattern}" 的配置\n使用 send -l 查看可用关键词列表`
-        let targetUserId: string | null = null
-        if (target) {
-          const at = h.select(h.parse(target), 'at')[0]?.attrs?.id
-          targetUserId = at || target.match(/@?(\d{5,10})/)?.[1] || null
-        }
-        try {
-          await session.send(buildReplyElements(session, kw.reply, targetUserId, config))
-          return ''
-        } catch (error) {
-          return '发送预设回复失败'
-        }
-      })
-  }
+  // 实例化所有可能用到的服务，并传入数据路径
+  const fileReplyService = config.fileReply ? new FileReplyService(ctx, config) : null
+  const keywordReplyService = (config.keywordReply || config.ocrReply) ? new KeywordReplyService(ctx, config, dataPath) : null
+  const forwardingService = config.enableForward ? new ForwardingService(ctx, config, dataPath) : null
+  const fileRecordService = config.fileRecord ? new FileRecordService(ctx, config, dataPath) : null
 
   // 仅在开启了任何一个功能时才注册消息监听器
-  const needsMessageListener = fileReplyService || keywordReplyService || ocrReplyService || forwardingService || fileRecordService
+  const needsMessageListener = fileReplyService || keywordReplyService || forwardingService || fileRecordService
   if (needsMessageListener) {
     ctx.on('message', async (session) => {
       try {
@@ -125,11 +72,14 @@ export function apply(ctx: Context, config: Config) {
         if (fileRecordService) {
           const file = session.elements?.find(el => el.type === 'file')
           if (file) {
-            // 注意: FileRecordService 现在需要一个处理文件上传的入口方法
             await fileRecordService.handleFile(file, session)
           }
-          // FileRecordService 也需要一个处理所有消息的入口方法
           await fileRecordService.handleMessage(session)
+        }
+
+        // 报错指引（如果启用）
+        if (fileReplyService) {
+          await fileReplyService.handleMessage(session)
         }
 
         // 消息转发（如果启用）
@@ -142,18 +92,8 @@ export function apply(ctx: Context, config: Config) {
           await keywordReplyService.handleMessage(session)
         }
 
-        // OCR 关键词检测（如果启用）
-        if (ocrReplyService) {
-          await ocrReplyService.handleMessage(session)
-        }
-
-        // 报错指引（如果启用）
-        if (fileReplyService) {
-          await fileReplyService.handleMessage(session)
-        }
-
       } catch (error) {
-        ctx.logger.warn('处理 mcl-grouptool 消息事件时发生错误:', error)
+        ctx.logger.warn('处理消息时发生错误:', error)
       }
     })
   }

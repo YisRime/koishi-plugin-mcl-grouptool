@@ -21,8 +21,8 @@ const LAUNCHER_CONFIGS = {
   },
   bakaxl: {
     name: 'BakaXL',
-    groupId: MULTI_LAUNCHER_GROUP_ID, // 当其他群遇到 BakaXL 文件时，指向多功能群
-    groups: ['480455628', '377521448', MULTI_LAUNCHER_GROUP_ID], // BakaXL 文件在这些群里是“正确的”
+    groupId: MULTI_LAUNCHER_GROUP_ID,
+    groups: ['480455628', '377521448', MULTI_LAUNCHER_GROUP_ID],
     pattern: /BakaXL-ErrorCan-\d{14}\.json$/i
   }
 } as const
@@ -38,7 +38,6 @@ export class FileReplyService {
 
     // 只有在明确归属的群组（非多功能群）才执行主要逻辑
     if (launcher) {
-      // 启动器文件检测
       const file = elements?.find(el => el.type === 'file')
       if (file) {
         const fileName = file.attrs.file || ''
@@ -48,7 +47,6 @@ export class FileReplyService {
         }
       }
 
-      // 防重复发送逻辑保持不变
       if (this.config.preventDup && content) {
         this.checkCancelDelay(content, channelId)
       }
@@ -85,7 +83,7 @@ export class FileReplyService {
     const currentLauncherInfo = LAUNCHER_CONFIGS[launcher]
     const matchedLauncherInfo = LAUNCHER_CONFIGS[matched]
 
-    const msg = `本群为 ${currentLauncherInfo.name} 用户群，检测到您发送的是 ${matchedLauncherInfo.name} 的文件。如果需要帮助，请前往对应的用户群：${matchedLauncherInfo.groupId}`
+    const msg = `本群为 ${currentLauncherInfo.name} 群，请前往 ${matchedLauncherInfo.groupId} 群解决问题`
 
     if (this.config.preventDup) {
       const timer = this.pending.get(session.channelId)
