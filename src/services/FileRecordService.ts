@@ -1,64 +1,84 @@
-import { promises as fs } from 'fs'
-import { join, parse } from 'path'
-import { Context, Session } from 'koishi'
-import {} from 'koishi-plugin-adapter-onebot'
-import { Config } from '../index'
-import { isUserWhitelisted } from '../utils'
+import { promises as fs } from 'fs';
+import { join, parse } from 'path';
+import { Context, Session } from 'koishi';
+import {} from 'koishi-plugin-adapter-onebot';
+import { Config } from '../index';
+import { isUserWhitelisted } from '../utils';
 
 // --- 接口与常量定义 ---
+
 interface MessageRecord {
   content: string;
   userId: string;
 }
+
 interface TargetInfo {
   recordId: string;
   uploaderId: string;
 }
 
+interface ActiveFileInfo {
+  recordId: string;
+  channelId: string;
+  timestamp: number;
+}
+
+/**
+ * @description 定义了将要被序列化并存入 state.json 文件的完整状态结构。
+ * 用户的活跃会话信息被持久化，以在重启后恢复。
+ */
+interface ServiceState {
+  fileIndex: Record<string, string>;
+  userActiveFile: Record<string, ActiveFileInfo>;
+}
+
 const FILE_RECORD_GROUPS = ['666546887', '978054335', '958853931'] as const;
 const ALLOWED_EXTENSIONS = ['.zip', '.log', '.txt', '.json', '.gz', '.xz'];
 const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
-const CONVERSATION_TIMEOUT = 5 * 60 * 1000;
+const CONVERSATION_TIMEOUT = 24 * 60 * 60 * 1000;
 const AMBIGUOUS_MESSAGE_PREFIX = '[交叉对话] ';
-
 const DATA_DIR = './data/mcl-grouptool';
-const STATE_FILE_PATH = join('./data', 'mcl-grouptool.json');
+const STATE_FILE_PATH = join(DATA_DIR, 'mcl-grouptool.json');
 
-// 文件管理器类，负责所有物理文件的读写操作
+/**
+ * 文件管理器类，负责所有物理文件的读写操作，并实现延迟创建目录。
+ */
 class FileManager {
-  constructor() {
-    this.ensureDataDirectory();
-  }
+  private dataDirExists = false;
 
   private async ensureDataDirectory(): Promise<void> {
-    try { await fs.access(DATA_DIR); } catch { await fs.mkdir(DATA_DIR, { recursive: true }); }
+    if (this.dataDirExists) return;
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    this.dataDirExists = true;
+  }
+
+  public async writeFile(filePath: string, data: string | Buffer): Promise<void> {
+    await this.ensureDataDirectory();
+    await fs.writeFile(filePath, data);
   }
 
   async createNewRecord(originalFileName: string, uploaderId: string, channelId: string): Promise<string> {
     const { name, ext } = parse(originalFileName);
-    const jsonExt = '.json';
     let count = 1;
     let recordId = originalFileName;
-
-    while (await this.fileExists(`${recordId}${jsonExt}`)) {
+    while (await this.fileExists(`${recordId}.json`)) {
       recordId = `${name}(${count})${ext}`;
       count++;
     }
-
-    const recordPath = join(DATA_DIR, `${recordId}${jsonExt}`);
+    const recordPath = join(DATA_DIR, `${recordId}.json`);
     const initialRecord = { recordId, uploaderId, channelId, uploadTime: new Date().toISOString(), messages: [] as MessageRecord[] };
-    await fs.writeFile(recordPath, JSON.stringify(initialRecord, null, 2), 'utf-8');
+    await this.writeFile(recordPath, JSON.stringify(initialRecord, null, 2));
     return recordId;
   }
 
   async deleteRecordFile(recordId: string): Promise<void> {
     const recordPath = join(DATA_DIR, `${recordId}.json`);
     try {
-        await fs.unlink(recordPath);
+      await fs.unlink(recordPath);
     } catch (error) {
-        if (error.code !== 'ENOENT') {
-            console.error(`无法删除记录文件 ${recordId}.json:`, error);
-        }
+      if (error.code !== 'ENOENT') {
+        console.error(`无法删除记录文件 ${recordId}.json:`, error);
+      }
     }
   }
 
@@ -68,14 +88,21 @@ class FileManager {
       const data = await fs.readFile(recordPath, 'utf-8');
       const record = JSON.parse(data);
       record.messages.push(message);
-      await fs.writeFile(recordPath, JSON.stringify(record, null, 2), 'utf-8');
+      await this.writeFile(recordPath, JSON.stringify(record, null, 2));
     } catch (error) {
-      console.error(`无法向记录 ${recordId}.json 中添加消息:`, error);
+      if (error.code !== 'ENOENT') {
+        console.error(`无法向记录 ${recordId}.json 中添加消息:`, error);
+      }
     }
   }
 
   async fileExists(fileNameWithExt: string): Promise<boolean> {
-    try { await fs.access(join(DATA_DIR, fileNameWithExt)); return true; } catch { return false; }
+    try {
+      await fs.access(join(DATA_DIR, fileNameWithExt));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   getFilePath(fileName: string): string {
@@ -83,145 +110,112 @@ class FileManager {
   }
 }
 
-// --- 核心服务类 ---
+/**
+ * 核心服务类，处理所有文件记录的业务逻辑。
+ */
 export class FileRecordService {
-  private fileManager: FileManager;
+  private fileManager = new FileManager();
   private fileIndex: Record<string, string> = {};
-  private userActiveFile: Record<string, string> = {};
-
-  private channelConversations = new Map<string, Map<string, number>>();
+  private userActiveFile: Record<string, ActiveFileInfo> = {};
 
   constructor(private ctx: Context, private config: Config) {
-    this.fileManager = new FileManager();
-    this.loadState().catch(error => { ctx.logger.error('无法初始化文件记录服务状态:', error); });
-    setInterval(() => this.cleanupStaleConversations(), 1 * 60 * 1000);
+    this.loadState().catch(error => { ctx.logger.error('初始化状态失败:', error); });
   }
 
   public async handleFile(fileElement: any, session: Session): Promise<void> {
     if (!this.isFileRecordAllowed(session.channelId)) return;
-    let fileName: string, fileSize: number, fileUrl: string;
-    try {
-      const msg = await session.onebot.getMsg(session.messageId);
-      const fileData = Array.isArray(msg.message) ? msg.message.find(el => el.type === 'file')?.data : null;
-      if (!fileData || !fileData.file || !fileData.file_size) {
-        return;
-      }
-      fileName = fileData.file;
-      fileSize = parseInt(fileData.file_size, 10);
-      fileUrl = fileData.url;
-    } catch (error) {
-      this.ctx.logger.warn(`获取文件信息失败:`, error);
-      fileName = fileElement.attrs.file;
-      fileSize = parseInt(fileElement.attrs.file_size || fileElement.attrs['file-size'] || '0', 10);
-      fileUrl = fileElement.attrs.src;
-    }
-    if (!fileName || !fileUrl) {
-      this.ctx.logger.warn(`无法从消息元素中获取文件名或URL.`);
+    const fileInfo = await this._extractFileInfo(fileElement, session);
+    if (!fileInfo) {
+      this.ctx.logger.warn(`无法从消息元素中获取有效的文件信息。`);
       return;
     }
-    await this._processAndRecordFile(fileName, fileSize, fileUrl, session.userId, session.channelId);
+    await this._processAndRecordFile(fileInfo.name, fileInfo.size, fileInfo.url, session);
   }
 
   public async handleMessage(session: Session): Promise<void> {
+    if (!this.isFileRecordAllowed(session.channelId)) return;
     const targets = await this._findTargetRecordInfos(session);
     if (targets.length === 0) return;
     const primaryRecordId = targets[0].recordId;
     const builtMessage = await this._buildMessageContent(session, primaryRecordId);
     if (!builtMessage) return;
-    const isAmbiguous = targets.length > 1;
-    const finalContent = (isAmbiguous ? AMBIGUOUS_MESSAGE_PREFIX : '') + builtMessage;
+    const finalContent = (targets.length > 1 ? AMBIGUOUS_MESSAGE_PREFIX : '') + builtMessage;
+    let stateChanged = false;
     for (const target of targets) {
       await this.fileManager.addMessageToRecord(target.recordId, { content: finalContent, userId: session.userId });
-      this.updateConversationTimestamp(session.channelId, target.uploaderId);
+      const activeInfo = this.userActiveFile[target.uploaderId];
+      if (activeInfo) {
+        activeInfo.timestamp = Date.now();
+        stateChanged = true;
+      }
+    }
+    if (stateChanged) {
+      await this.saveState();
     }
   }
 
-  /**
-   * 核心逻辑：根据消息上下文查找所有相关的目标档案。
-   */
   private async _findTargetRecordInfos(session: Session): Promise<TargetInfo[]> {
-    const { userId: currentUserId, channelId, event } = session;
+    const { userId: currentUserId, channelId } = session;
+    const now = Date.now();
+    const isWithinTimeout = (timestamp: number) => now - timestamp <= CONVERSATION_TIMEOUT;
 
     const explicitTargetId = this._getTargetFromReplyOrMention(session);
 
-    // 1. 如果存在明确的@或回复目标，则所有逻辑都必须在此代码块内完成。
-    if (explicitTargetId) {
-        let recordId = this.userActiveFile[explicitTargetId];
-
-        // 尝试从引用中恢复上下文（例如，回复一个很早之前的文件消息）
-        const quote = (event as any).message?.quote;
-        if (!recordId && quote?.id && (isUserWhitelisted(currentUserId, this.config) || currentUserId === explicitTargetId)) {
-            try {
-                const originalMessage = await session.onebot.getMsg(quote.id);
-                const fileData = Array.isArray(originalMessage.message) ? originalMessage.message.find(el => el.type === 'file')?.data : null;
-                if (fileData?.file && fileData.file_size && fileData.url) {
-                    recordId = await this._processAndRecordFile(fileData.file, parseInt(fileData.file_size, 10), fileData.url, explicitTargetId, channelId);
-                }
-            } catch (error) {
-                this.ctx.logger.warn(`无法获取或处理引用的文件消息 ${quote.id}:`, error);
-            }
-        }
-
-        // 如果最终为这个明确目标找到了记录，则返回它
-        if (recordId && (isUserWhitelisted(currentUserId, this.config) || currentUserId === explicitTargetId)) {
-            return [{ recordId, uploaderId: explicitTargetId }];
-        }
-
-        // 2. 如果存在明确目标但找不到任何关联文件，必须在此处返回空数组，
-        return [];
-    }
-
-    // 3. 只有在没有明确@或回复时，才继续检查发送者自身的状态。
-    const uploaderRecordId = this.userActiveFile[currentUserId];
-    if (uploaderRecordId) {
-        return [{ recordId: uploaderRecordId, uploaderId: currentUserId }];
-    }
-
-    // 4. 最后，如果发送者是白名单成员且无明确目标，则查找当前频道内的活跃对话。
     if (isUserWhitelisted(currentUserId, this.config)) {
-        const activeConversations = this._getActiveConversations(channelId);
-        if (activeConversations.length > 0) {
-            return activeConversations.map(uploaderId => ({
-                recordId: this.userActiveFile[uploaderId],
-                uploaderId,
-            })).filter(target => target.recordId);
+      if (explicitTargetId) {
+        const targetInfo = this.userActiveFile[explicitTargetId];
+        if (targetInfo && targetInfo.channelId === channelId && isWithinTimeout(targetInfo.timestamp)) {
+          return [{ recordId: targetInfo.recordId, uploaderId: explicitTargetId }];
         }
+        return [];
+      } else {
+        // 白名单用户发言，查找当前频道所有活跃的会话
+        return Object.entries(this.userActiveFile)
+          .filter(([_, info]) => info.channelId === channelId && isWithinTimeout(info.timestamp))
+          .map(([uploaderId, info]) => ({ recordId: info.recordId, uploaderId }));
+      }
+    } else {
+      // 普通用户发言
+      const uploaderInfo = this.userActiveFile[currentUserId];
+      if (!uploaderInfo || uploaderInfo.channelId !== channelId || !isWithinTimeout(uploaderInfo.timestamp)) {
+        return [];
+      }
+
+      // 只能回复自己的记录，或者在没有明确目标时默认发给自己的记录
+      // 如果回复的目标是白名单用户，则不处理（由白名单用户逻辑处理）
+      if (!explicitTargetId || explicitTargetId === currentUserId) {
+        return [{ recordId: uploaderInfo.recordId, uploaderId: currentUserId }];
+      }
     }
 
     return [];
   }
 
-  private async _processAndRecordFile(fileName: string, fileSize: number, fileUrl: string, uploaderId: string, channelId: string): Promise<string | null> {
-    if (fileSize > 16 * 1024 * 1024 || !this.hasAllowedExtension(fileName)) {
-        return null;
-    }
+  private async _processAndRecordFile(fileName: string, fileSize: number, fileUrl: string, session: Session): Promise<void> {
+    const { userId: uploaderId, channelId } = session;
+    if (fileSize > 16 * 1024 * 1024 || !this.hasAllowedExtension(fileName)) return;
+
     const fileKey = `${fileName}_${fileSize}`;
-    let recordId = this.fileIndex[fileKey];
-    if (recordId && await this.fileManager.fileExists(`${recordId}.json`)) {
-        if (this.userActiveFile[uploaderId] !== recordId) {
-            this.userActiveFile[uploaderId] = recordId;
-            await this.saveState();
-        }
-        return recordId;
+    const now = Date.now();
+
+    if (this.fileIndex[fileKey] && await this.fileManager.fileExists(`${this.fileIndex[fileKey]}.json`)) {
+      this.userActiveFile[uploaderId] = { recordId: this.fileIndex[fileKey], channelId, timestamp: now };
+      await this.saveState();
+      return;
     }
-    recordId = await this.fileManager.createNewRecord(fileName, uploaderId, channelId);
+
+    const recordId = await this.fileManager.createNewRecord(fileName, uploaderId, channelId);
     this.fileIndex[fileKey] = recordId;
-    this.userActiveFile[uploaderId] = recordId;
+    this.userActiveFile[uploaderId] = { recordId, channelId, timestamp: now };
     await this.saveState();
-    try {
-        const downloadResult = await this.downloadFile(fileUrl, recordId);
-        if (!downloadResult) throw new Error('下载返回为空，可能为网络或权限问题。');
-        return recordId;
-    } catch (error) {
-        this.ctx.logger.error(`无法下载文件，将回滚状态。记录ID: ${recordId}, 错误:`, error);
-        await this.fileManager.deleteRecordFile(recordId);
-        delete this.fileIndex[fileKey];
-        if (this.userActiveFile[uploaderId] === recordId) {
-            delete this.userActiveFile[uploaderId];
-        }
-        await this.saveState();
-        return null;
-    }
+
+    this.downloadFile(fileUrl, recordId).catch(async (error) => {
+      this.ctx.logger.error(`后台下载失败，回滚记录 ${recordId}:`, error);
+      await this.fileManager.deleteRecordFile(recordId);
+      if (this.fileIndex[fileKey] === recordId) delete this.fileIndex[fileKey];
+      if (this.userActiveFile[uploaderId]?.recordId === recordId) delete this.userActiveFile[uploaderId];
+      await this.saveState();
+    });
   }
 
   private async _buildMessageContent(session: Session, recordId: string | null): Promise<string | null> {
@@ -230,105 +224,57 @@ export class FileRecordService {
     for (const element of session.elements) {
       switch (element.type) {
         case 'text':
-          if (element.attrs.content?.trim()) {
-            contentParts.push(element.attrs.content);
+          const text = element.attrs.content?.trim();
+          if (text) {
+            contentParts.push(text);
             hasMeaningfulContent = true;
           }
           break;
-        case 'at':
-        case 'reply':
-          break;
         case 'img':
           if (element.attrs.summary === '[动画表情]') continue;
-          const originalFileName = element.attrs.file || `image_${Date.now()}.jpg`;
-          if (!this._isAllowedImageExtension(originalFileName)) {
-            continue;
-          }
+          const imgName = element.attrs.file || `image_${Date.now()}.jpg`;
+          if (!this._isAllowedImageExtension(imgName)) continue;
           hasMeaningfulContent = true;
-          const uniqueImageName = recordId ? `${recordId}-${originalFileName}` : originalFileName;
-          const downloadResult = await this.downloadFile(element.attrs.src, uniqueImageName);
-          contentParts.push(downloadResult ? `[图片: ${uniqueImageName}]` : `[图片下载失败: ${originalFileName}]`);
+          const uniqueImgName = recordId ? `${recordId}-${imgName}` : imgName;
+          try {
+            await this.downloadFile(element.attrs.src, uniqueImgName);
+            contentParts.push(`[图片: ${uniqueImgName}]`);
+          } catch {
+            contentParts.push(`[图片下载失败: ${imgName}]`);
+          }
           break;
       }
     }
-    return hasMeaningfulContent ? contentParts.join('') : null;
+    return hasMeaningfulContent ? contentParts.join(' ') : null;
   }
 
-  private updateConversationTimestamp(channelId: string, uploaderId: string): void {
-    if (!this.channelConversations.has(channelId)) {
-      this.channelConversations.set(channelId, new Map());
-    }
-    this.channelConversations.get(channelId).set(uploaderId, Date.now());
-  }
-
-  private cleanupStaleConversations(): void {
-    const now = Date.now();
-    for (const [channelId, conversations] of this.channelConversations.entries()) {
-      for (const [uploaderId, timestamp] of conversations.entries()) {
-        if (now - timestamp >= CONVERSATION_TIMEOUT) {
-          conversations.delete(uploaderId);
-        }
-      }
-      if (conversations.size === 0) {
-        this.channelConversations.delete(channelId);
-      }
-    }
-  }
-
-  private _getActiveConversations(channelId: string): string[] {
-    const conversations = this.channelConversations.get(channelId);
-    if (!conversations) return [];
-    const now = Date.now();
-    return Array.from(conversations.entries())
-      .filter(([, timestamp]) => now - timestamp < CONVERSATION_TIMEOUT)
-      .map(([uploaderId]) => uploaderId);
-  }
-
-  private _getTargetFromReplyOrMention(session: Session): string | null {
-    const mention = session.elements?.find(el => el.type === 'at');
-    if (mention?.attrs?.id) return mention.attrs.id;
-    const quote = (session.event as any).message?.quote;
-    if (quote?.user?.id) return quote.user.id;
-    return null;
-  }
-
-  private isFileRecordAllowed(channelId: string): boolean {
-    const baseGroups = FILE_RECORD_GROUPS as readonly string[];
-    const additionalGroups = this.config.additionalGroups || [];
-    return [...baseGroups, ...additionalGroups].includes(channelId);
-  }
-
-  private hasAllowedExtension(fileName: string): boolean {
-    if (!fileName.includes('.')) return false;
-    const ext = fileName.toLowerCase().substring(fileName.lastIndexOf('.'));
-    return ALLOWED_EXTENSIONS.includes(ext);
-  }
-
-  private _isAllowedImageExtension(fileName: string): boolean {
-    if (!fileName || !fileName.includes('.')) return false;
-    const ext = fileName.toLowerCase().substring(fileName.lastIndexOf('.'));
-    return ALLOWED_IMAGE_EXTENSIONS.includes(ext);
-  }
-
-  private async downloadFile(url: string, newFileNameOnDisk: string): Promise<{ path: string, size: number } | null> {
+  private async _extractFileInfo(element: any, session: Session): Promise<{ name: string; size: number; url: string } | null> {
     try {
-      const response = await this.ctx.http.get(url, { responseType: 'arraybuffer' });
-      const downloadPath = this.fileManager.getFilePath(newFileNameOnDisk);
-      await fs.writeFile(downloadPath, Buffer.from(response));
-      return { path: downloadPath, size: response.byteLength };
+      const msg = await session.onebot.getMsg(session.messageId);
+      const fileData = Array.isArray(msg.message) ? msg.message.find(el => el.type === 'file')?.data : null;
+      if (fileData?.file && fileData.file_size && fileData.url) {
+        return { name: fileData.file, size: parseInt(fileData.file_size, 10), url: fileData.url };
+      }
     } catch (error) {
-      this.ctx.logger.warn(`文件下载失败: ${newFileNameOnDisk}`, error);
-      return null;
+      this.ctx.logger.warn(`调用 onebot.getMsg 失败:`, error);
     }
+    const { file, 'file-size': fileSize, src } = element.attrs;
+    if (file && fileSize && src) {
+      return { name: file, size: parseInt(fileSize, 10), url: src };
+    }
+    return null;
   }
 
   private async loadState(): Promise<void> {
     try {
       const stateData = await fs.readFile(STATE_FILE_PATH, 'utf-8');
-      const parsedState = JSON.parse(stateData);
+      const parsedState: ServiceState = JSON.parse(stateData);
       this.fileIndex = parsedState.fileIndex || {};
       this.userActiveFile = parsedState.userActiveFile || {};
-    } catch {
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        this.ctx.logger.warn('读取状态文件失败:', error);
+      }
       this.fileIndex = {};
       this.userActiveFile = {};
     }
@@ -336,14 +282,27 @@ export class FileRecordService {
 
   private async saveState(): Promise<void> {
     try {
-        const state = {
-          fileIndex: this.fileIndex,
-          userActiveFile: this.userActiveFile
-        };
-        await fs.mkdir(parse(STATE_FILE_PATH).dir, { recursive: true });
-        await fs.writeFile(STATE_FILE_PATH, JSON.stringify(state, null, 2));
+      const state: ServiceState = {
+        fileIndex: this.fileIndex,
+        userActiveFile: this.userActiveFile,
+      };
+      await this.fileManager.writeFile(STATE_FILE_PATH, JSON.stringify(state, null, 2));
     } catch (error) {
-        this.ctx.logger.error('无法保存服务状态:', error);
+      this.ctx.logger.error('保存服务状态失败:', error);
+    }
+  }
+
+  private _getTargetFromReplyOrMention = (session: Session): string | null => session.elements.find(el => el.type === 'at')?.attrs?.id ?? (session.event as any).message?.quote?.user?.id ?? null;
+  private isFileRecordAllowed = (channelId: string): boolean => [...FILE_RECORD_GROUPS, ...(this.config.additionalGroups || [])].includes(channelId);
+  private hasAllowedExtension = (fileName: string): boolean => ALLOWED_EXTENSIONS.some(ext => fileName.toLowerCase().endsWith(ext));
+  private _isAllowedImageExtension = (fileName: string): boolean => ALLOWED_IMAGE_EXTENSIONS.some(ext => fileName.toLowerCase().endsWith(ext));
+  private async downloadFile(url: string, newFileNameOnDisk: string): Promise<void> {
+    try {
+      const response = await this.ctx.http.get<ArrayBuffer>(url, { responseType: 'arraybuffer' });
+      await this.fileManager.writeFile(this.fileManager.getFilePath(newFileNameOnDisk), Buffer.from(response));
+    } catch (error) {
+      this.ctx.logger.warn(`文件下载失败: ${newFileNameOnDisk}`, error);
+      throw error;
     }
   }
 }
