@@ -188,6 +188,7 @@ export class FileRecordService {
       if (recordId && (isUserWhitelisted(currentUserId, this.config) || currentUserId === explicitTargetId)) {
         return [{ recordId, uploaderId: explicitTargetId }];
       }
+      return [];
     }
 
     const uploaderRecordId = this.userActiveFile[currentUserId];
