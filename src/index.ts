@@ -9,6 +9,7 @@ import { isUserWhitelisted } from './utils'
 
 export const name = 'mcl-grouptool'
 
+// 插件介绍与使用说明
 export const usage = `
 <div style="border-radius: 10px; border: 1px solid #ddd; padding: 16px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
   <h2 style="margin-top: 0; color: #4a6ee0;">📌 插件说明</h2>
@@ -23,57 +24,60 @@ export const usage = `
 </div>
 `
 
+// 插件配置项接口
 export interface Config {
-  preventDup?: boolean
-  mention?: boolean
-  quote?: boolean
   fileReply?: boolean
+  fileRecord?: boolean
   keywordReply?: boolean
   ocrReply?: boolean
   enableForward?: boolean
-  forwardTarget?: string
-  whitelist?: string[]
-  fileRecord?: boolean
-  additionalGroups?: string[]
+  preventDup?: boolean
+  quote?: boolean
+  mention?: boolean
   recordTimeout?: number
   conversationTimeout?: number
+  forwardTarget?: string
+  additionalGroups?: string[]
+  whitelist?: string[]
 }
 
+// 使用 Schema 定义配置项
 export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
-    fileReply: Schema.boolean().default(false).description('启用报错指引'),
-    fileRecord: Schema.boolean().default(false).description('启用报告记录'),
-    keywordReply: Schema.boolean().default(false).description('启用关键词回复'),
-    ocrReply: Schema.boolean().default(false).description('启用 OCR 识别'),
-    enableForward: Schema.boolean().default(false).description('启用消息转发'),
+    fileReply: Schema.boolean().default(false).description('报错指引'),
+    fileRecord: Schema.boolean().default(false).description('报告记录'),
+    keywordReply: Schema.boolean().default(false).description('关键词回复'),
+    ocrReply: Schema.boolean().default(false).description('OCR 识别'),
+    enableForward: Schema.boolean().default(false).description('关键词转发'),
   }).description('开关配置'),
+
   Schema.object({
-    preventDup: Schema.boolean().default(true).description('延迟发送提示'),
-    quote: Schema.boolean().default(true).description('回复时引用消息'),
-    mention: Schema.boolean().default(false).description('回复时@用户'),
-    recordTimeout: Schema.number().default(2 * 60 * 1000).description('记录时长'),
-    conversationTimeout: Schema.number().default(10 * 60 * 1000).description('会话时长'),
-    forwardTarget: Schema.string().description('转发目标群'),
-    additionalGroups: Schema.array(Schema.string()).description('报告记录群').role('table'),
+    quote: Schema.boolean().default(true).description('回复时引用消息。'),
+    mention: Schema.boolean().default(false).description('回复时@用户。'),
+    preventDup: Schema.boolean().default(true).description('报错指引延迟发送'),
+    recordTimeout: Schema.number().default(2 * 60 * 1000).description('报告交叉记录时长'),
+    conversationTimeout: Schema.number().default(10 * 60 * 1000).description('报告记录会话时长'),
+    forwardTarget: Schema.string().description('消息转发目标'),
+    additionalGroups: Schema.array(Schema.string()).description('报告记录额外群组').role('table'),
     whitelist: Schema.array(Schema.string()).description('白名单用户').role('table'),
-  }).description('通用配置'),
+  }).description('参数配置'),
 ])
 
+// 插件主函数
 export function apply(ctx: Context, config: Config) {
+  // 定义插件数据的存放路径
   const dataPath = join(ctx.baseDir, 'data', name)
 
-  // 实例化所有可能用到的服务，并传入数据路径
+  // 根据配置按需实例化各个功能服务
   const fileReplyService = config.fileReply ? new FileReplyService(ctx, config) : null
   const keywordReplyService = config.keywordReply || config.ocrReply ? new KeywordReplyService(ctx, config, dataPath) : null
   const forwardingService = config.enableForward ? new ForwardingService(ctx, config, dataPath) : null
   const fileRecordService = config.fileRecord ? new FileRecordService(ctx, config, dataPath) : null
 
-  // 注册主命令
-  const mcl = ctx.command('mcl', 'MCL 群组工具集').action(async () => {
-    return usage
-  })
+  // 注册主命令 `mcl`
+  const mcl = ctx.command('mcl', 'MCL 群组管理工具')
 
-  // 注册关键词回复子命令
+  // --- 注册关键词回复相关子命令 ---
   if (keywordReplyService) {
     mcl
       .subcommand('.ka <text:string> <reply:text>', '添加回复关键词')
@@ -98,7 +102,7 @@ export function apply(ctx: Context, config: Config) {
       .usage('重命名一个现有的回复关键词。')
       .action(async ({ session }, oldText, newText) => {
         if (!isUserWhitelisted(session.userId, config)) return
-        if (!oldText || !newText) return '请提供旧的关键词和新的关键词。'
+        if (!oldText || !newText) return '请提供旧关键词和新关键词。'
         return keywordReplyService.renameKeyword(oldText, newText)
       })
 
@@ -125,11 +129,19 @@ export function apply(ctx: Context, config: Config) {
       .action(async ({ session }, textKey, target, placeholderValue) => {
         if (!isUserWhitelisted(session.userId, config)) return
         if (!textKey) return '请提供关键词。'
-        return keywordReplyService.executeSend(session, textKey, target, placeholderValue)
+
+        let recalled = false
+        try {
+          await session.bot.deleteMessage(session.channelId, session.messageId)
+          recalled = true
+        } catch (e) {}
+
+        // 调用服务并传入撤回成功与否的标志
+        return keywordReplyService.executeSend(session, textKey, target, placeholderValue, { recalled })
       })
   }
 
-  // 注册转发关键词子命令
+  // --- 注册消息转发相关子命令 ---
   if (forwardingService) {
     mcl
       .subcommand('.fa <text:string>', '添加转发关键词')
@@ -154,7 +166,7 @@ export function apply(ctx: Context, config: Config) {
       .usage('重命名一个现有的转发关键词。')
       .action(async ({ session }, oldText, newText) => {
         if (!isUserWhitelisted(session.userId, config)) return
-        if (!oldText || !newText) return '请提供旧的关键词和新的关键词。'
+        if (!oldText || !newText) return '请提供旧关键词和新关键词。'
         return forwardingService.renameFwdKeyword(oldText, newText)
       })
 
@@ -181,7 +193,8 @@ export function apply(ctx: Context, config: Config) {
   if (needsMessageListener) {
     ctx.on('message', async session => {
       try {
-        // 文件下载和记录（如果启用）
+        // 各服务处理消息的顺序可能影响最终结果，当前顺序是经过考量的：
+        // 1. 文件记录服务先处理，确保记录的是最原始的消息。
         if (fileRecordService) {
           const file = session.elements?.find(el => el.type === 'file')
           if (file) {
@@ -189,23 +202,20 @@ export function apply(ctx: Context, config: Config) {
           }
           await fileRecordService.handleMessage(session)
         }
-
-        // 报错指引（如果启用）
+        // 2. 报错指引服务处理文件消息。
         if (fileReplyService) {
           await fileReplyService.handleMessage(session)
         }
-
-        // 消息转发（如果启用）
+        // 3. 消息转发服务处理。
         if (forwardingService) {
           await forwardingService.handleMessage(session)
         }
-
-        // 关键词回复（如果启用）
+        // 4. 关键词回复服务最后处理，避免回复内容被其他服务记录或转发。
         if (keywordReplyService) {
           await keywordReplyService.handleMessage(session)
         }
       } catch (error) {
-        ctx.logger.warn('处理消息时发生错误:', error)
+        ctx.logger.warn('处理消息时发生未知错误:', error)
       }
     })
   }
