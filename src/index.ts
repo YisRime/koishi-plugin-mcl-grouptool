@@ -5,6 +5,7 @@ import { FileRecordService } from './services/FileRecordService'
 import { FileReplyService } from './services/FileReplyService'
 import { KeywordReplyService } from './services/KeywordReplyService'
 import { ForwardingService } from './services/ForwardingService'
+import { CurfewService } from './services/CurfewService'
 import * as utils from './utils'
 import { isUserWhitelisted } from './utils'
 
@@ -32,6 +33,7 @@ export interface Config {
   fileRecord?: boolean
   keywordReply?: boolean
   ocrReply?: boolean
+  curfew?: boolean
   enableForward?: boolean
   adminCommands?: boolean
   // 参数配置
@@ -40,6 +42,7 @@ export interface Config {
   mention?: boolean
   recordTimeout?: number
   conversationTimeout?: number
+  curfewTime?: string
   forwardTarget?: string
   additionalGroups?: string[]
   whitelist?: string[]
@@ -54,6 +57,7 @@ export const Config: Schema<Config> = Schema.intersect([
     ocrReply: Schema.boolean().default(false).description('OCR 识别'),
     enableForward: Schema.boolean().default(false).description('关键词转发'),
     adminCommands: Schema.boolean().default(false).description('群组管理'),
+    curfew: Schema.boolean().default(false).description('定时宵禁'),
   }).description('开关配置'),
 
   Schema.object({
@@ -62,15 +66,20 @@ export const Config: Schema<Config> = Schema.intersect([
     preventDup: Schema.boolean().default(true).description('报错指引延迟发送'),
     recordTimeout: Schema.number().default(2 * 60 * 1000).description('报告交叉记录时长'),
     conversationTimeout: Schema.number().default(10 * 60 * 1000).description('报告记录会话时长'),
+    curfewTime: Schema.string().default('23-7').description('宵禁时间'),
     forwardTarget: Schema.string().description('消息转发目标'),
     additionalGroups: Schema.array(Schema.string()).description('报告记录额外群组').role('table'),
     whitelist: Schema.array(Schema.string()).description('白名单用户').role('table'),
   }).description('参数配置'),
 ])
 
-// 插件主函数
+/**
+ * @function apply
+ * @description Koishi 插件主函数，用于加载和初始化所有服务与命令。
+ * @param ctx Koishi 上下文
+ * @param config 插件配置
+ */
 export function apply(ctx: Context, config: Config) {
-  // 定义插件数据的存放路径
   const dataPath = join(ctx.baseDir, 'data', name)
 
   // 根据配置按需实例化各个功能服务
@@ -78,8 +87,8 @@ export function apply(ctx: Context, config: Config) {
   const keywordReplyService = config.keywordReply || config.ocrReply ? new KeywordReplyService(ctx, config, dataPath) : null
   const forwardingService = config.enableForward ? new ForwardingService(ctx, config, dataPath) : null
   const fileRecordService = config.fileRecord ? new FileRecordService(ctx, config, dataPath) : null
+  const curfewService = config.curfew ? new CurfewService(ctx, config) : null
 
-  // 注册主命令 `mcl`
   const mcl = ctx.command('mcl', 'MCL 群组管理')
 
   // --- 注册群组管理相关子命令 ---
@@ -122,9 +131,7 @@ export function apply(ctx: Context, config: Config) {
           if (banDurationInSeconds < 0) return
 
           await session.onebot.setGroupBan(+groupId, +targetId, banDurationInSeconds)
-        } catch {
-          return
-        }
+        } catch {}
       })
 
     mcl
@@ -138,9 +145,7 @@ export function apply(ctx: Context, config: Config) {
           const value = typeof enable === 'boolean' ? enable : true
           await session.onebot.setGroupWholeBan(+groupId, value)
           return `群 ${groupId} 已${value ? '开启' : '关闭'}全体禁言。`
-        } catch {
-          return
-        }
+        } catch {}
       })
 
     mcl
@@ -156,9 +161,7 @@ export function apply(ctx: Context, config: Config) {
 
           await session.onebot.setGroupKick(+groupId, +targetId, false)
           return `已踢出 ${targetId}。`
-        } catch {
-          return
-        }
+        } catch {}
       })
 
     mcl
@@ -174,9 +177,7 @@ export function apply(ctx: Context, config: Config) {
 
           await session.onebot.setGroupKick(+groupId, +targetId, true)
           return `已封禁 ${targetId}。`
-        } catch {
-          return
-        }
+        } catch {}
       })
 
     mcl
@@ -192,9 +193,7 @@ export function apply(ctx: Context, config: Config) {
           await session.bot.deleteMessage(session.channelId, messageId)
           await session.bot.deleteMessage(session.channelId, session.messageId)
           return ''
-        } catch {
-          return
-        }
+        } catch {}
       })
   }
 
@@ -257,7 +256,6 @@ export function apply(ctx: Context, config: Config) {
           recalled = true
         } catch (e) {}
 
-        // 调用服务并传入撤回成功与否的标志
         return keywordReplyService.executeSend(session, textKey, target, placeholderValue, { recalled })
       })
   }
@@ -309,13 +307,19 @@ export function apply(ctx: Context, config: Config) {
       })
   }
 
-  // 仅在开启了任何一个功能时才注册消息监听器
-  const needsMessageListener = fileReplyService || keywordReplyService || forwardingService || fileRecordService
+  // --- 注册事件监听器 ---
+
+  // 只要有任何一个需要监听消息的服务开启，就注册统一的消息监听器
+  const needsMessageListener = fileReplyService || keywordReplyService || forwardingService || fileRecordService || curfewService
   if (needsMessageListener) {
     ctx.on('message', async session => {
       try {
-        // 各服务处理消息的顺序可能影响最终结果，当前顺序是经过考量的：
-        // 1. 文件记录服务先处理，确保记录的是最原始的消息。
+        // 宵禁服务
+        if (curfewService) {
+          curfewService.handleMessage(session)
+        }
+
+        // 1. 文件记录服务
         if (fileRecordService) {
           const file = session.elements?.find(el => el.type === 'file')
           if (file) {
@@ -323,15 +327,15 @@ export function apply(ctx: Context, config: Config) {
           }
           await fileRecordService.handleMessage(session)
         }
-        // 2. 报错指引服务处理文件消息。
+        // 2. 报错指引服务
         if (fileReplyService) {
           await fileReplyService.handleMessage(session)
         }
-        // 3. 消息转发服务处理。
+        // 3. 消息转发服务
         if (forwardingService) {
           await forwardingService.handleMessage(session)
         }
-        // 4. 关键词回复服务最后处理，避免回复内容被其他服务记录或转发。
+        // 4. 关键词回复服务
         if (keywordReplyService) {
           await keywordReplyService.handleMessage(session)
         }
