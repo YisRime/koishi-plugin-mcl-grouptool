@@ -13,9 +13,8 @@ async function ensureDirectoryExists(filePath: string): Promise<void> {
 
 /**
  * 异步读取、解析并返回 JSON文件的内容。
- * 如果文件不存在，则会使用提供的默认数据创建该文件，并返回默认数据。
  * @param filePath 文件的完整路径
- * @param defaultData 当文件不存在时，用于创建文件并返回的默认数据
+ * @param defaultData 当文件不存在时，用于返回的默认数据
  * @returns 解析后的数据或默认数据
  */
 export async function loadJsonFile<T>(filePath: string, defaultData: T): Promise<T> {
@@ -25,11 +24,10 @@ export async function loadJsonFile<T>(filePath: string, defaultData: T): Promise
     return JSON.parse(fileContent) as T
   } catch (error) {
     if (error.code === 'ENOENT') {
-      await saveJsonFile(filePath, defaultData) // 创建新文件
       return defaultData
     } else {
       console.error(`加载 JSON 文件失败: ${filePath}`, error)
-      return defaultData // 返回默认值以保证程序运行
+      return defaultData
     }
   }
 }
@@ -104,7 +102,7 @@ export const buildReplyElements = (session: Session, content: string, targetUser
   } else if (config?.mention) {
     elements.push(h('at', { id: session.userId }), h('text', { content: ' ' }))
   }
-  elements.push(h('text', { content }))
+  elements.push(h.text(content))
   return elements
 }
 
@@ -114,8 +112,9 @@ export const buildReplyElements = (session: Session, content: string, targetUser
 export const isUserWhitelisted = (userId: string, config: Config): boolean => config.whitelist?.includes(userId) ?? false
 
 interface KeywordConfig {
-  regex: string
+  text: string
   reply: string
+  regex?: string
 }
 
 /**
@@ -123,8 +122,26 @@ interface KeywordConfig {
  */
 export async function checkKeywords(content: string, keywords: KeywordConfig[], session: Session, config: Config): Promise<boolean> {
   for (const kw of keywords) {
-    if (kw.regex && new RegExp(kw.regex, 'i').test(content)) {
-      await session.send(buildReplyElements(session, kw.reply, undefined, config))
+    let matched = false
+    // 优先匹配正则表达式
+    if (kw.regex) {
+      if (new RegExp(kw.regex, 'i').test(content)) {
+        matched = true
+      }
+    } else {
+      // 其次匹配纯文本
+      if (content.includes(kw.text)) {
+        matched = true
+      }
+    }
+
+    if (matched) {
+      const replyContent = h.parse(kw.reply)
+      const elements = buildReplyElements(session, '', undefined, config)
+      // Remove the empty text element placeholder before adding the real content
+      elements.pop()
+      elements.push(...replyContent)
+      await session.send(elements)
       return true
     }
   }
@@ -136,10 +153,34 @@ export async function checkKeywords(content: string, keywords: KeywordConfig[], 
  */
 export async function handleOCR(imageElement: any, session: Session): Promise<string | null> {
   try {
+    // 确保有 ocrImage 方法
+    if (typeof session.bot.internal?.ocrImage !== 'function') return null
+
     const ocrResult = await session.bot.internal.ocrImage(imageElement.attrs.src)
-    if (Array.isArray(ocrResult) && ocrResult.length > 0) return ocrResult.map(item => item.text).filter(text => text?.trim()).join('\n')
+    if (Array.isArray(ocrResult) && ocrResult.length > 0) {
+      return ocrResult.map(item => item.text).filter(text => text?.trim()).join('\n')
+    }
     return null
   } catch (error) {
+    session.platform && session.bot.ctx.logger.warn(`OCR 调用失败: ${error}`)
     return null
   }
+}
+
+/**
+ * 从命令参数中解析目标用户 ID
+ * @param target 可能包含@某人或纯用户ID的字符串
+ * @returns 解析出的用户 ID 或 null
+ */
+export function getTargetUserId(target: string): string | null {
+  if (!target) return null
+  const atElement = h.select(h.parse(target), 'at')[0]
+  if (atElement?.attrs?.id) {
+    return atElement.attrs.id
+  }
+  const match = target.match(/@?(\d+)/)
+  if (match) {
+    return match[1]
+  }
+  return null
 }

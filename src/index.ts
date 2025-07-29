@@ -76,62 +76,103 @@ export function apply(ctx: Context, config: Config) {
   // 注册关键词回复子命令
   if (keywordReplyService) {
     mcl
-      .subcommand('.send <regexPattern:string> [target:string]', '发送预设回复')
-      .action(async ({ session }, regexPattern, target) => {
+      .subcommand('.ka <text:string> <reply:text>', '添加回复关键词')
+      .usage('添加一个用于触发回复的关键词。')
+      .action(async ({ session }, text, reply) => {
         if (!isUserWhitelisted(session.userId, config)) return
-        if (!regexPattern) return '请提供正则表达式。'
-        return keywordReplyService.executeSend(session, regexPattern, target)
+        if (!text || !reply) return '请提供关键词和回复内容。'
+        return keywordReplyService.addKeyword(text, reply)
       })
 
     mcl
-      .subcommand('.list', '查看文本关键词列表')
+      .subcommand('.kr <text:string>', '删除回复关键词')
+      .usage('删除一个现有的回复关键词。')
+      .action(async ({ session }, text) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!text) return '请提供要删除的关键词。'
+        return keywordReplyService.removeKeyword(text)
+      })
+
+    mcl
+      .subcommand('.kc <oldText:string> <newText:string>', '重命名回复关键词')
+      .usage('重命名一个现有的回复关键词。')
+      .action(async ({ session }, oldText, newText) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!oldText || !newText) return '请提供旧的关键词和新的关键词。'
+        return keywordReplyService.renameKeyword(oldText, newText)
+      })
+
+    mcl
+      .subcommand('.kl', '查看回复关键词列表')
+      .usage('查看所有已配置的回复关键词。')
       .action(({ session }) => {
         if (!isUserWhitelisted(session.userId, config)) return
         return keywordReplyService.listKeywords()
       })
 
     mcl
-      .subcommand('.add <regex:string> <reply:text>', '添加文本关键词')
-      .action(async ({ session }, regex, reply) => {
+      .subcommand('.kgex <text:string> [regex:text]', '配置关键词正则')
+      .usage('为回复关键词配置正则表达式。')
+      .action(async ({ session }, text, regex) => {
         if (!isUserWhitelisted(session.userId, config)) return
-        if (!regex || !reply) return '请提供正则表达式和回复内容。'
-        return keywordReplyService.addKeyword(regex, reply)
+        if (!text) return '请提供要操作的关键词。'
+        return keywordReplyService.toggleKeywordRegex(text, regex)
       })
 
     mcl
-      .subcommand('.remove <regex:string>', '删除文本关键词')
-      .action(async ({ session }, regex) => {
+      .subcommand('.s <textKey:string> [target:string] [placeholderValue:text]', '发送预设回复')
+      .usage('手动触发预设回复。')
+      .action(async ({ session }, textKey, target, placeholderValue) => {
         if (!isUserWhitelisted(session.userId, config)) return
-        if (!regex) return '请提供要删除的正则表达式。'
-        return keywordReplyService.removeKeyword(regex)
+        if (!textKey) return '请提供关键词。'
+        return keywordReplyService.executeSend(session, textKey, target, placeholderValue)
       })
   }
 
   // 注册转发关键词子命令
   if (forwardingService) {
-    const fwd = mcl.subcommand('.fwd', '转发关键词管理')
+    mcl
+      .subcommand('.fa <text:string>', '添加转发关键词')
+      .usage('添加一个用于触发消息转发的关键词。')
+      .action(async ({ session }, text) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!text) return '请提供要添加的关键词。'
+        return forwardingService.addFwdKeyword(text)
+      })
 
-    fwd
-      .subcommand('.list', '查看转发关键词列表')
+    mcl
+      .subcommand('.fr <text:string>', '删除转发关键词')
+      .usage('删除一个现有的转发关键词。')
+      .action(async ({ session }, text) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!text) return '请提供要删除的关键词。'
+        return forwardingService.removeFwdKeyword(text)
+      })
+
+    mcl
+      .subcommand('.fc <oldText:string> <newText:string>', '重命名转发关键词')
+      .usage('重命名一个现有的转发关键词。')
+      .action(async ({ session }, oldText, newText) => {
+        if (!isUserWhitelisted(session.userId, config)) return
+        if (!oldText || !newText) return '请提供旧的关键词和新的关键词。'
+        return forwardingService.renameFwdKeyword(oldText, newText)
+      })
+
+    mcl
+      .subcommand('.fl', '查看转发关键词列表')
+      .usage('查看所有已配置的转发关键词。')
       .action(({ session }) => {
         if (!isUserWhitelisted(session.userId, config)) return
         return forwardingService.listFwdKeywords()
       })
 
-    fwd
-      .subcommand('.add <regex:string>', '添加转发关键词')
-      .action(async ({ session }, regex) => {
+    mcl
+      .subcommand('.fgex <text:string> [regex:text]', '配置转发关键词正则')
+      .usage('为转发关键词配置正则表达式。')
+      .action(async ({ session }, text, regex) => {
         if (!isUserWhitelisted(session.userId, config)) return
-        if (!regex) return '请提供要添加的正则表达式。'
-        return forwardingService.addFwdKeyword(regex)
-      })
-
-    fwd
-      .subcommand('.remove <regex:string>', '删除转发关键词')
-      .action(async ({ session }, regex) => {
-        if (!isUserWhitelisted(session.userId, config)) return
-        if (!regex) return '请提供要删除的正则表达式。'
-        return forwardingService.removeFwdKeyword(regex)
+        if (!text) return '请提供要操作的关键词。'
+        return forwardingService.toggleFwdKeywordRegex(text, regex)
       })
   }
 
