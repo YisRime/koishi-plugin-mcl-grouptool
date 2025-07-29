@@ -1,10 +1,11 @@
-import { Context, Schema } from 'koishi'
+import { Context, Schema, Session } from 'koishi'
 import { join } from 'path'
 import {} from 'koishi-plugin-adapter-onebot'
 import { FileRecordService } from './services/FileRecordService'
 import { FileReplyService } from './services/FileReplyService'
 import { KeywordReplyService } from './services/KeywordReplyService'
 import { ForwardingService } from './services/ForwardingService'
+import * as utils from './utils'
 import { isUserWhitelisted } from './utils'
 
 export const name = 'mcl-grouptool'
@@ -26,11 +27,14 @@ export const usage = `
 
 // 插件配置项接口
 export interface Config {
+  // 功能开关
   fileReply?: boolean
   fileRecord?: boolean
   keywordReply?: boolean
   ocrReply?: boolean
   enableForward?: boolean
+  adminCommands?: boolean
+  // 参数配置
   preventDup?: boolean
   quote?: boolean
   mention?: boolean
@@ -49,6 +53,7 @@ export const Config: Schema<Config> = Schema.intersect([
     keywordReply: Schema.boolean().default(false).description('关键词回复'),
     ocrReply: Schema.boolean().default(false).description('OCR 识别'),
     enableForward: Schema.boolean().default(false).description('关键词转发'),
+    adminCommands: Schema.boolean().default(false).description('群组管理'),
   }).description('开关配置'),
 
   Schema.object({
@@ -75,7 +80,112 @@ export function apply(ctx: Context, config: Config) {
   const fileRecordService = config.fileRecord ? new FileRecordService(ctx, config, dataPath) : null
 
   // 注册主命令 `mcl`
-  const mcl = ctx.command('mcl', 'MCL 群组管理工具')
+  const mcl = ctx.command('mcl', 'MCL 群组管理')
+
+  // --- 注册群组管理相关子命令 ---
+  if (config.adminCommands) {
+    const groupAliases = {
+      '666546887': '666546887', H: '666546887', HMCL: '666546887',
+      '978054335': '978054335', P: '978054335', PCL: '978054335',
+    }
+
+    const resolveGroupId = (groupKey: string, session: Session): string | null => {
+      if (groupKey) {
+        const key = groupKey.toUpperCase()
+        if (groupAliases[key]) return groupAliases[key]
+      }
+      return session.guildId || null
+    }
+
+    const checkPermissions = async (session: Session, groupId: string): Promise<boolean> => {
+      try {
+        if (!isUserWhitelisted(session.userId, config) || !groupId) return false
+        const botInfo = await session.onebot.getGroupMemberInfo(+groupId, +session.selfId)
+        return botInfo?.role === 'owner' || botInfo?.role === 'admin'
+      } catch {
+        return false
+      }
+    }
+
+    mcl
+      .subcommand('.m <target:text> [duration:string] [groupKey:string]', '禁言群成员')
+      .usage('禁言或解禁指定成员，默认单位为分钟，支持 d,h,m,s。')
+      .action(async ({ session }, target, duration, groupKey) => {
+        try {
+          const groupId = resolveGroupId(groupKey, session)
+          if (!groupId || !(await checkPermissions(session, groupId))) return
+
+          const targetId = utils.parseTarget(target)
+          if (!targetId) return
+
+          const banDurationInSeconds = utils.parseDurationToSeconds(duration || '30m', 'm')
+          if (banDurationInSeconds < 0) return
+
+          await session.onebot.setGroupBan(+groupId, +targetId, banDurationInSeconds)
+
+          if (banDurationInSeconds === 0) {
+            return `已为成员 ${targetId} 解除禁言。`
+          } else {
+            const durationText = `${Math.round(banDurationInSeconds / 60)} 分钟`
+            return `已将成员 ${targetId} 禁言 ${durationText}。`
+          }
+        } catch {
+          return
+        }
+      })
+
+    mcl
+      .subcommand('.mall [enable:boolean] [groupKey:string]', '全体禁言')
+      .usage('开启或关闭全体禁言。')
+      .action(async ({ session }, enable, groupKey) => {
+        try {
+          const groupId = resolveGroupId(groupKey, session)
+          if (!groupId || !(await checkPermissions(session, groupId))) return
+
+          const value = typeof enable === 'boolean' ? enable : true
+          await session.onebot.setGroupWholeBan(+groupId, value)
+          return `已在群 ${groupId} ${value ? '开启' : '关闭'} 全体禁言。`
+        } catch {
+          return
+        }
+      })
+
+    mcl
+      .subcommand('.ban <target:text> [groupKey:string]', '封禁群成员')
+      .usage('踢出成员并拒绝其再次加群。')
+      .action(async ({ session }, target, groupKey) => {
+        try {
+          const groupId = resolveGroupId(groupKey, session)
+          if (!groupId || !(await checkPermissions(session, groupId))) return
+
+          const targetId = utils.parseTarget(target)
+          if (!targetId) return
+
+          await session.onebot.setGroupKick(+groupId, +targetId, true)
+          return `已封禁成员 ${targetId}。`
+        } catch {
+          return
+        }
+      })
+
+    mcl
+      .subcommand('.del', '撤回消息')
+      .usage('回复一条消息以将其撤回。')
+      .action(async ({ session }) => {
+        try {
+          if (!session.guildId || !(await checkPermissions(session, session.guildId))) return
+
+          const messageId = session.quote?.id
+          if (!messageId) return
+
+          await session.bot.deleteMessage(session.channelId, messageId)
+          await session.bot.deleteMessage(session.channelId, session.messageId)
+          return ''
+        } catch {
+          return
+        }
+      })
+  }
 
   // --- 注册关键词回复相关子命令 ---
   if (keywordReplyService) {

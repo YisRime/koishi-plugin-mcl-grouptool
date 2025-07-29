@@ -221,3 +221,62 @@ export function getTargetUserId(target: string): string | null {
   }
   return null
 }
+
+/**
+ * @function parseTarget
+ * @description 解析目标字符串，返回 QQ 号或 null。支持 @某人 或直接提供 QQ 号。
+ * @param target 包含目标用户信息的字符串。
+ * @returns 解析出的用户 ID 字符串，或 null。
+ */
+export function parseTarget(target: string): string | null {
+  if (!target) return null
+  try {
+    const at = h.select(h.parse(target), 'at')[0]?.attrs?.id
+    if (at && !isNaN(Number(at))) return at
+    const match = target.match(/(\d{5,11})/)?.[1]
+    return match || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * @function parseDurationToSeconds
+ * @description 解析时间字符串 (如 30, 10m, 2h, 1d) 并转换为秒。
+ * @param durationStr 时间字符串。
+ * @param defaultUnit 如果没有单位，默认使用什么单位。 'm' for minutes, 's' for seconds.
+ * @returns 总秒数。
+ */
+export function parseDurationToSeconds(durationStr: string, defaultUnit: 'm' | 's' = 'm'): number {
+  if (!durationStr) return 0
+  // 如果是纯数字，按默认单位处理
+  if (/^\d+$/.test(durationStr)) {
+    const value = parseInt(durationStr, 10)
+    return value * (defaultUnit === 'm' ? 60 : 1)
+  }
+
+  const regex = /(\d+)\s*(d|h|m|s)/gi
+  let totalSeconds = 0
+  let match
+
+  while ((match = regex.exec(durationStr)) !== null) {
+    const value = parseInt(match[1], 10)
+    const unit = match[2].toLowerCase()
+    switch (unit) {
+      case 'd':
+        totalSeconds += value * 86400
+        break
+      case 'h':
+        totalSeconds += value * 3600
+        break
+      case 'm':
+        totalSeconds += value * 60
+        break
+      case 's':
+        totalSeconds += value
+        break
+    }
+  }
+
+  return totalSeconds
+}
