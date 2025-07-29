@@ -108,7 +108,7 @@ export function apply(ctx: Context, config: Config) {
     }
 
     mcl
-      .subcommand('.m <target:text> [duration:string] [groupKey:string]', '禁言群成员')
+      .subcommand('.m <target:string> [duration:string] [groupKey:string]', '禁言群成员')
       .usage('禁言或解禁指定成员，默认单位为分钟，支持 d,h,m,s。')
       .action(async ({ session }, target, duration, groupKey) => {
         try {
@@ -144,7 +144,7 @@ export function apply(ctx: Context, config: Config) {
       })
 
     mcl
-      .subcommand('.kk <target:text> [groupKey:string]', '踢出群成员')
+      .subcommand('.kk <target:string> [groupKey:string]', '踢出群成员')
       .usage('踢出成员。')
       .action(async ({ session }, target, groupKey) => {
         try {
@@ -162,7 +162,7 @@ export function apply(ctx: Context, config: Config) {
       })
 
     mcl
-      .subcommand('.ban <target:text> [groupKey:string]', '封禁群成员')
+      .subcommand('.ban <target:string> [groupKey:string]', '封禁群成员')
       .usage('踢出成员并拒绝其再次加群。')
       .action(async ({ session }, target, groupKey) => {
         try {
