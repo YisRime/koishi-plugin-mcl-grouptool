@@ -12,14 +12,14 @@ const MULTI_LAUNCHER_GROUP_ID = '958853931'
 const LAUNCHER_CONFIGS = {
   hmcl: {
     name: 'HMCL',
-    groupId: '666546887', // 主要群号
-    groups: ['633640264', '203232161', '201034984', '533529045', '744304553', '282845310', '482624681', '991620626', '657677715', '775084843'], // 所有相关群号
+    groupId: '666546887', // 主要群号 (报错反馈群)
+    groups: ['666546887', '633640264', '203232161', '201034984', '533529045', '744304553', '282845310', '482624681', '991620626', '657677715', '775084843'], // 所有相关群号
     pattern: /minecraft-exported-(crash-info|logs)-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.(zip|log)$/i, // 匹配错误文件的正则表达式
   },
   pcl: {
     name: 'PCL',
-    groupId: '978054335',
-    groups: ['1028074835'],
+    groupId: '978054335', // 主要群号 (报错反馈群)
+    groups: ['978054335', '1028074835'],
     pattern: /错误报告-\d{4}-\d{1,2}-\d{1,2}_\d{2}\.\d{2}\.\d{2}\.zip$/i,
   },
   bakaxl: {
@@ -49,7 +49,7 @@ export class FileReplyService {
     const { elements, channelId, content } = session
     const launcher = this.getLauncherByChannel(channelId)
 
-    // 仅在已明确归属启动器的群组中（而非多功能群）执行主要逻辑
+    // 仅在已明确归属启动器的群组中执行主要逻辑
     if (launcher) {
       const fileElement = elements?.find(el => el.type === 'file')
       // 如果消息中包含文件元素
@@ -96,42 +96,52 @@ export class FileReplyService {
    * @method handleLauncherFile
    * @description 处理匹配到的启动器文件的核心逻辑。
    * @param session 当前会话
-   * @param launcher 当前群组的启动器类型
-   * @param matched 文件所匹配到的启动器类型
+   * @param currentGroupLauncher 当前群组所属的启动器类型
+   * @param matchedFileLauncher 文件所匹配到的启动器类型
    */
-  private async handleLauncherFile(session: Session, launcher: LauncherName, matched: LauncherName): Promise<void> {
-    // 规则 1: 如果在多功能群，则接受任何类型的文件，不作任何提示。
-    if (session.channelId === MULTI_LAUNCHER_GROUP_ID) {
+  private async handleLauncherFile(session: Session, currentGroupLauncher: LauncherName, matchedFileLauncher: LauncherName): Promise<void> {
+    const { channelId } = session
+
+    // 规则：多功能群 (BakaXL主群) 不进行任何提示
+    if (channelId === MULTI_LAUNCHER_GROUP_ID) {
       return
     }
 
-    // 规则 2: 如果文件类型与当前群组类型匹配，说明发送正确，不作提示。
-    if (matched === launcher) {
-      return
-    }
+    const currentLauncherInfo = LAUNCHER_CONFIGS[currentGroupLauncher]
+    const matchedLauncherInfo = LAUNCHER_CONFIGS[matchedFileLauncher]
+    let messageToSend: string | null = null
 
-    // 规则 3: 文件与群组不匹配，发送指引提示。
-    const currentLauncherInfo = LAUNCHER_CONFIGS[launcher]
-    const matchedLauncherInfo = LAUNCHER_CONFIGS[matched]
-
-    const msg = `本群为「${currentLauncherInfo.name}」交流群，请前往「${matchedLauncherInfo.name}」群（${matchedLauncherInfo.groupId}）解决问题。`
-
-    // 如果开启了防刷屏功能
-    if (this.config.preventDup) {
-      const timer = this.pending.get(session.channelId)
-      if (timer) clearTimeout(timer) // 清除上一个待发送的提示
-
-      // 设置一个 3 秒的延迟，如果在延迟期间用户发送了正确群号，则取消本次提示
-      this.pending.set(
-        session.channelId,
-        setTimeout(async () => {
-          await session.send(buildReplyElements(session, msg, undefined, this.config))
-          this.pending.delete(session.channelId) // 发送后清除定时器
-        }, 3000),
-      )
+    if (currentGroupLauncher === matchedFileLauncher) {
+      // 文件类型与当前群组所属的启动器类型匹配
+      // 检查当前群是否是该启动器的主要报错群
+      if (channelId !== currentLauncherInfo.groupId) {
+        // 在关联群发送了正确的日志，提示去主群
+        messageToSend = `本群为「${currentLauncherInfo.name}」用户群，请前往「${matchedLauncherInfo.name}」群（${matchedLauncherInfo.groupId}）解决问题。`
+      }
+      // 如果就在主群发送，则不作提示 (messageToSend 保持为 null)
     } else {
-      // 直接发送提示
-      await session.send(buildReplyElements(session, msg, undefined, this.config))
+      // 文件类型与当前群组类型不匹配，提示去正确的文件所属启动器的主群
+      messageToSend = `本群为「${currentLauncherInfo.name}」用户群，请前往「${matchedLauncherInfo.name}」群（${matchedLauncherInfo.groupId}）解决问题。`
+    }
+
+    // 如果有需要发送的消息，则执行发送逻辑
+    if (messageToSend) {
+      if (this.config.preventDup) {
+        const timer = this.pending.get(channelId)
+        if (timer) clearTimeout(timer) // 清除上一个待发送的提示
+
+        // 设置一个 3 秒的延迟，如果在延迟期间用户发送了正确群号，则取消本次提示
+        this.pending.set(
+          channelId,
+          setTimeout(async () => {
+            await session.send(buildReplyElements(session, messageToSend, undefined, this.config))
+            this.pending.delete(channelId) // 发送后清除定时器
+          }, 3000),
+        )
+      } else {
+        // 直接发送提示
+        await session.send(buildReplyElements(session, messageToSend, undefined, this.config))
+      }
     }
   }
 

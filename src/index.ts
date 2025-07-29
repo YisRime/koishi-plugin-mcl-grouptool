@@ -122,20 +122,13 @@ export function apply(ctx: Context, config: Config) {
           if (banDurationInSeconds < 0) return
 
           await session.onebot.setGroupBan(+groupId, +targetId, banDurationInSeconds)
-
-          if (banDurationInSeconds === 0) {
-            return `已为成员 ${targetId} 解除禁言。`
-          } else {
-            const durationText = `${Math.round(banDurationInSeconds / 60)} 分钟`
-            return `已将成员 ${targetId} 禁言 ${durationText}。`
-          }
         } catch {
           return
         }
       })
 
     mcl
-      .subcommand('.mall [enable:boolean] [groupKey:string]', '全体禁言')
+      .subcommand('.ma [enable:boolean] [groupKey:string]', '全体禁言')
       .usage('开启或关闭全体禁言。')
       .action(async ({ session }, enable, groupKey) => {
         try {
@@ -144,7 +137,25 @@ export function apply(ctx: Context, config: Config) {
 
           const value = typeof enable === 'boolean' ? enable : true
           await session.onebot.setGroupWholeBan(+groupId, value)
-          return `已在群 ${groupId} ${value ? '开启' : '关闭'} 全体禁言。`
+          return `群 ${groupId} 已${value ? '开启' : '关闭'}全体禁言。`
+        } catch {
+          return
+        }
+      })
+
+    mcl
+      .subcommand('.kk <target:text> [groupKey:string]', '踢出群成员')
+      .usage('踢出成员。')
+      .action(async ({ session }, target, groupKey) => {
+        try {
+          const groupId = resolveGroupId(groupKey, session)
+          if (!groupId || !(await checkPermissions(session, groupId))) return
+
+          const targetId = utils.parseTarget(target)
+          if (!targetId) return
+
+          await session.onebot.setGroupKick(+groupId, +targetId, false)
+          return `已踢出 ${targetId}。`
         } catch {
           return
         }
@@ -162,7 +173,7 @@ export function apply(ctx: Context, config: Config) {
           if (!targetId) return
 
           await session.onebot.setGroupKick(+groupId, +targetId, true)
-          return `已封禁成员 ${targetId}。`
+          return `已封禁 ${targetId}。`
         } catch {
           return
         }
