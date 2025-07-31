@@ -122,35 +122,32 @@ export class FileRecordService {
   private async _findTargetRecordInfos(session: Session): Promise<TargetInfo[]> {
     const { userId: currentUserId, channelId } = session
     const now = Date.now()
-    const explicitTargetId = this._getTargetFromReplyOrMention(session) // 检查是否回复或@了某人
+    const explicitTargetId = this._getTargetFromReplyOrMention(session)
     const channelActiveFiles = this.activeFiles[channelId] || {}
 
-    // 场景一：发送者是白名单用户（通常是服主、技术支持）
+    // 场景一：消息是明确的回复或@
+    if (explicitTargetId) {
+      const targetInfo = channelActiveFiles[explicitTargetId]
+      // 只要被回复者有活跃的记录文件，就无视时间戳，直接返回目标
+      if (targetInfo) {
+        return [{ recordId: targetInfo.recordId, uploaderId: explicitTargetId }]
+      }
+      // 如果被回复者没有记录，则不处理
+      return []
+    }
+
+    // 场景二：消息是直接发言（没有回复或@）
+    // 根据发言者身份决定如何处理
     if (isUserWhitelisted(currentUserId, this.config)) {
-      if (explicitTargetId) {
-        // 白名单用户明确回复或@了某人
-        const targetInfo = channelActiveFiles[explicitTargetId]
-        // 检查目标的会话是否仍在有效期内
-        if (targetInfo && now - targetInfo.timestamp <= this.config.conversationTimeout) {
-          return [{ recordId: targetInfo.recordId, uploaderId: explicitTargetId }]
-        }
-        return [] // 目标会话已超时，不记录
-      } else {
-        // 白名单用户直接发言（未回复或@），可能是在同时回复多个人
-        // 记录到所有仍在“活跃讨论期”（recordTimeout）的会话中
-        return Object.entries(channelActiveFiles)
-          .filter(([_, info]) => now - info.timestamp <= this.config.recordTimeout)
-          .map(([uploaderId, info]) => ({ recordId: info.recordId, uploaderId }))
-      }
+      // 白名单用户直接发言：广播到所有在 `recordTimeout` 内的活跃会话中
+      return Object.entries(channelActiveFiles)
+        .filter(([_, info]) => now - info.timestamp <= this.config.recordTimeout * 60 * 1000)
+        .map(([uploaderId, info]) => ({ recordId: info.recordId, uploaderId }))
     } else {
-      // 场景二：发送者是普通用户
+      // 普通用户直接发言：仅记录到自己的会话中，且要检查 `conversationTimeout`
       const uploaderInfo = channelActiveFiles[currentUserId]
-      // 检查该用户自己是否有活跃的会话，且未超时
-      if (!uploaderInfo || now - uploaderInfo.timestamp > this.config.conversationTimeout) {
-        return []
-      }
-      // 普通用户只能在自己的会话中发言（即没有回复或@别人，或者回复或@的是自己）
-      if (!explicitTargetId || explicitTargetId === currentUserId) {
+      // 检查用户自己是否有活跃会话，并且没有超时
+      if (uploaderInfo && now - uploaderInfo.timestamp <= this.config.conversationTimeout * 60 * 1000) {
         return [{ recordId: uploaderInfo.recordId, uploaderId: currentUserId }]
       }
     }
