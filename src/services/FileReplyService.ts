@@ -116,12 +116,12 @@ export class FileReplyService {
       // 检查当前群是否是该启动器的主要报错群
       if (channelId !== currentLauncherInfo.groupId) {
         // 在关联群发送了正确的日志，提示去主群
-        messageToSend = `本群为「${currentLauncherInfo.name}」用户群，请前往「${matchedLauncherInfo.name}」群（${matchedLauncherInfo.groupId}）解决问题。`
+        messageToSend = `本群为「${currentLauncherInfo.name}」用户群，请前往「${matchedLauncherInfo.name}」报错群（${matchedLauncherInfo.groupId}）解决问题。`
       }
       // 如果就在主群发送，则不作提示 (messageToSend 保持为 null)
     } else {
       // 文件类型与当前群组类型不匹配，提示去正确的文件所属启动器的主群
-      messageToSend = `本群为「${currentLauncherInfo.name}」用户群，请前往「${matchedLauncherInfo.name}」群（${matchedLauncherInfo.groupId}）解决问题。`
+      messageToSend = `本群为「${currentLauncherInfo.name}」用户群，请前往「${matchedLauncherInfo.name}」报错群（${matchedLauncherInfo.groupId}）解决问题。`
     }
 
     // 如果有需要发送的消息，则执行发送逻辑
