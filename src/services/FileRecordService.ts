@@ -13,7 +13,7 @@ interface MessageRecord {
 
 // 消息的目标记录信息
 interface TargetInfo {
-  recordId: string // 记录文件的 ID (通常是原始文件名)
+  recordId: string // 记录文件的 ID (现在包含日期路径, e.g., '2025-08-03/report.zip')
   uploaderId: string // 上传该文件的用户 ID
 }
 
@@ -45,7 +45,7 @@ const AMBIGUOUS_MESSAGE_PREFIX = '[交叉对话] '
  * @description 核心服务类，负责处理所有与文件记录相关的业务逻辑。
  */
 export class FileRecordService {
-  private dataDir: string // 存放记录文件和资源的目录
+  private dataDir: string // 存放记录文件和资源的目录 (e.g., .../data/mcl-grouptool/logs)
   private stateFilePath: string // 存放服务状态的 state.json 文件路径
   private fileIndex: Record<string, string> = {} // 文件索引
   private activeFiles: Record<string, Record<string, ActiveSessionInfo>> = {} // 活跃会话
@@ -113,8 +113,10 @@ export class FileRecordService {
 
   // --- 私有辅助方法 ---
 
+  /**
+   * @description 根据 recordId (e.g., '2025-08-03/report.zip') 获取其对应的 JSON 记录文件路径。
+   */
   private getRecordFilePath = (recordId: string): string => join(this.dataDir, `${recordId}.json`)
-  private getAssetFilePath = (fileName: string): string => join(this.dataDir, fileName)
 
   /**
    * @description 核心逻辑：根据当前消息、发送者身份和会话状态，判断消息应记录到哪个文件。
@@ -168,20 +170,23 @@ export class FileRecordService {
     if (!this.activeFiles[channelId]) this.activeFiles[channelId] = {}
 
     // 如果文件之前已被记录过，则直接更新其活跃状态
+    // fileExists 会检查包含日期路径的完整路径
     if (this.fileIndex[fileKey] && (await fileExists(this.getRecordFilePath(this.fileIndex[fileKey])))) {
       this.activeFiles[channelId][uploaderId] = { recordId: this.fileIndex[fileKey], timestamp: now }
       await this.saveState()
       return
     }
 
-    // 创建新的文件记录
+    // 创建新的文件记录，ID 现在将包含日期前缀
     const recordId = await this._createNewRecord(fileName, uploaderId)
     this.fileIndex[fileKey] = recordId
     this.activeFiles[channelId][uploaderId] = { recordId, timestamp: now }
-    await this.saveState()
+
+    // 下载文件的目标路径现在也包含日期子目录
+    const downloadPath = join(this.dataDir, recordId)
 
     // 后台下载文件，如果失败则回滚记录
-    downloadFile(this.ctx, fileUrl, this.getAssetFilePath(recordId)).catch(async error => {
+    downloadFile(this.ctx, fileUrl, downloadPath).catch(async error => {
       this.ctx.logger.error(`文件后台下载失败，回滚记录 ${recordId}:`, error)
       await deleteFile(this.getRecordFilePath(recordId))
       if (this.fileIndex[fileKey] === recordId) delete this.fileIndex[fileKey]
@@ -190,6 +195,9 @@ export class FileRecordService {
       }
       await this.saveState()
     })
+
+    // 立即保存一次状态，以防下载时间过长导致状态丢失
+    await this.saveState()
   }
 
   /**
@@ -215,10 +223,14 @@ export class FileRecordService {
           if (!this._isAllowedImageExtension(imgName)) continue
 
           hasMeaningfulContent = true
-          // 为图片名添加记录ID前缀以防重名
-          const uniqueImgName = recordId ? `${recordId}-${imgName}` : imgName
+          // 从 recordId 中提取原始文件名作为前缀，防止重名
+          const baseName = recordId ? parse(recordId).name : 'unknown_record'
+          const uniqueImgName = `${baseName}-${imgName}`
+
           try {
-            await downloadFile(this.ctx, element.attrs.src, this.getAssetFilePath(uniqueImgName))
+            // 将图片下载到与记录文件相同的日期子目录中
+            const imagePath = join(this.dataDir, parse(recordId).dir, uniqueImgName)
+            await downloadFile(this.ctx, element.attrs.src, imagePath)
             contentParts.push(`[图片: ${uniqueImgName}]`)
           } catch {
             contentParts.push(`[图片下载失败: ${imgName}]`)
@@ -230,15 +242,18 @@ export class FileRecordService {
   }
 
   /**
-   * @description 创建一个新的 JSON 记录文件。
+   * @description 创建一个新的 JSON 记录文件。返回的 recordId 将带有日期前缀。
    */
   private async _createNewRecord(originalFileName: string, uploaderId: string): Promise<string> {
+    const datePrefix = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const { name, ext } = parse(originalFileName)
     let count = 1
-    let recordId = originalFileName
-    // 处理文件名冲突，例如 a.zip, a(1).zip, a(2).zip
+    let recordId = join(datePrefix, originalFileName) // e.g., '2025-08-03/report.zip'
+
+    // 处理文件名冲突，例如 a.zip, a(1).zip
     while (await fileExists(this.getRecordFilePath(recordId))) {
-      recordId = `${name}(${count})${ext}`
+      const newFileName = `${name}(${count})${ext}`
+      recordId = join(datePrefix, newFileName)
       count++
     }
     const initialRecord = { recordId, uploaderId, messages: [] as MessageRecord[] }

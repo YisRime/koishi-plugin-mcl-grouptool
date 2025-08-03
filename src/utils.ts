@@ -132,7 +132,7 @@ export const buildReplyElements = (session: Session, content: string, targetUser
  * @param config 插件配置。
  * @returns 如果用户在白名单中，返回 true，否则返回 false。
  */
-export const isUserWhitelisted = (userId: string, config: Config): boolean => config.whitelist?.includes(userId) ?? false
+export const isUserWhitelisted = (userId: string, config: Config): boolean => config.whitelist?.some(item => item.userId === userId) ?? false
 
 // 定义关键词配置的接口，与 KeywordReplyService 内部一致
 interface KeywordConfig {

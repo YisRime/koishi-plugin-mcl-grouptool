@@ -45,7 +45,7 @@ export interface Config {
   curfewTime?: string
   forwardTarget?: string
   additionalGroups?: string[]
-  whitelist?: string[]
+  whitelist?: { userId: string; nickname?: string }[]
 }
 
 // 使用 Schema 定义配置项
@@ -69,7 +69,10 @@ export const Config: Schema<Config> = Schema.intersect([
     curfewTime: Schema.string().default('23-7').description('宵禁时间'),
     forwardTarget: Schema.string().description('消息转发目标'),
     additionalGroups: Schema.array(Schema.string()).description('报告记录额外群组').role('table'),
-    whitelist: Schema.array(Schema.string()).description('白名单用户').role('table'),
+    whitelist: Schema.array(Schema.object({
+      userId: Schema.string().description('QQ'),
+      nickname: Schema.string().description('昵称'),
+    })).description('白名单用户').role('table'),
   }).description('参数配置'),
 ])
 
