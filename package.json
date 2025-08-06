@@ -26,8 +26,7 @@
     "group"
   ],
   "devDependencies": {
-    "koishi-plugin-adapter-onebot": "^6.8.0",
-    "koishi-plugin-puppeteer": "^3.5.2"
+    "koishi-plugin-adapter-onebot": "^6.8.0"
   },
   "peerDependencies": {
     "koishi": "4.18.8"
