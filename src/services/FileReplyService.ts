@@ -47,6 +47,23 @@ export class FileReplyService {
    */
   public async handleMessage(session: Session): Promise<void> {
     const { elements, channelId, content } = session
+
+    // 定义需要检测闪传的主要群组ID
+    const mainGroupIds = [LAUNCHER_CONFIGS.hmcl.groupId, LAUNCHER_CONFIGS.pcl.groupId, MULTI_LAUNCHER_GROUP_ID];
+
+    // 通过严格匹配消息的开头、结尾和关键内容，精准识别闪传消息，避免误触发
+    const isFlashTransferMessage = elements?.some(el => {
+      if (el.type !== 'text' || !el.attrs.content) return false;
+      const text = el.attrs.content.trim(); // trim() 移除可能存在的前后空格
+      return text.startsWith('对方通过QQ闪传发送文件给你') && text.includes('qfile.qq.com');
+    });
+
+    // 如果在主要群组中检测到闪传消息，则进行提示并终止后续逻辑
+    if (mainGroupIds.includes(channelId) && isFlashTransferMessage) {
+      await session.send(buildReplyElements(session, '请不要使用闪传发送文件，请直接上传文件到群中。', undefined, this.config));
+      return; // 结束处理，避免后续逻辑干扰
+    }
+
     const launcher = this.getLauncherByChannel(channelId)
 
     // 仅在已明确归属启动器的群组中执行主要逻辑
