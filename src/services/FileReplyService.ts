@@ -55,7 +55,7 @@ export class FileReplyService {
     const isFlashTransferMessage = elements?.some(el => {
       if (el.type !== 'text' || !el.attrs.content) return false;
       const text = el.attrs.content.trim(); // trim() 移除可能存在的前后空格
-      return text.startsWith('对方通过QQ闪传发送文件给你') && text.includes('qfile.qq.com');
+      return text.includes('对方通过QQ闪传发送文件给你') && text.includes('qfile.qq.com');
     });
 
     // 如果在主要群组中检测到闪传消息，则进行提示并终止后续逻辑
