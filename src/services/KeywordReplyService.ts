@@ -1,15 +1,13 @@
 import { join, parse } from 'path'
-import { promises as fs } from 'fs'
 import { Context, h, Session } from 'koishi'
 import { Config } from '../index'
-import { buildReplyElements, loadJsonFile, saveJsonFile, checkKeywords, handleOCR, getTargetUserId, deleteFile, downloadFile, fileExists } from '../utils'
+import { buildReplyElements, loadJsonFile, saveJsonFile, checkKeywords, handleOCR, getTargetUserId } from '../utils'
 
 // 关键词配置的接口定义
 interface KeywordConfig {
   text: string       // 关键词文本
   reply: string      // 回复内容（可能包含 h 元素字符串）
   regex?: string     // 可选的正则表达式
-  imageIndex: number // 用于生成图片文件名的索引
 }
 
 /**
@@ -19,11 +17,9 @@ interface KeywordConfig {
 export class KeywordReplyService {
   private keywords: KeywordConfig[] = []
   private keywordsFilePath: string // keywords.json 的路径
-  private keywordImagesPath: string // 存放关键词回复中图片的目录路径
 
   constructor(private ctx: Context, private config: Config, dataPath: string) {
     this.keywordsFilePath = join(dataPath, 'keywords.json')
-    this.keywordImagesPath = join(dataPath, 'keyword_images')
     this.loadKeywords().catch(err => ctx.logger.error('加载文本关键词失败:', err))
   }
 
@@ -39,26 +35,33 @@ export class KeywordReplyService {
 
   /**
    * @method processReply
-   * @description 处理原始回复内容，如果包含网络图片，则下载并替换为本地路径。
+   * @description 处理原始回复内容，如果包含网络图片，则下载并将其转换为 Base64 编码的 data URI。
    * @param rawReply 原始的回复字符串
-   * @param keywordConfig 相关的关键词配置对象，用于更新 imageIndex
    * @returns 处理后的回复字符串
    */
-  private async processReply(rawReply: string, keywordConfig: KeywordConfig): Promise<string> {
+  private async processReply(rawReply: string): Promise<string> {
     const elements = h.parse(rawReply)
     const processedElements = await Promise.all(
       elements.map(async el => {
         if (el.type === 'img' && el.attrs.src?.startsWith('http')) {
           const url = el.attrs.src
           try {
-            keywordConfig.imageIndex++
-            const extension = parse(new URL(url).pathname).ext || '.jpg'
-            const fileName = `${keywordConfig.text}_${keywordConfig.imageIndex}${extension}`
-            const filePath = join(this.keywordImagesPath, fileName)
-            await downloadFile(this.ctx, url, filePath)
-            el.attrs.src = `file://${filePath}` // 替换为本地文件 URI
+            // 下载图片到内存缓冲区
+            const response = await this.ctx.http.get<ArrayBuffer>(url, { responseType: 'arraybuffer' })
+            const buffer = Buffer.from(response)
+            const base64 = buffer.toString('base64')
+
+            // 从 URL 中推断 MIME 类型，提供默认值
+            let mimeType = 'image/jpeg'
+            const extension = parse(new URL(url).pathname).ext.toLowerCase()
+            if (extension === '.png') mimeType = 'image/png'
+            else if (extension === '.gif') mimeType = 'image/gif'
+            else if (extension === '.webp') mimeType = 'image/webp'
+
+            // 将 src 替换为 Base64 data URI
+            el.attrs.src = `data:${mimeType};base64,${base64}`
           } catch (error) {
-            this.ctx.logger.warn(`关键词回复的图片下载失败: ${url}`, error)
+            this.ctx.logger.warn(`关键词回复的图片下载并转换为Base64失败: ${url}`, error)
           }
         }
         return el
@@ -137,9 +140,9 @@ export class KeywordReplyService {
     if (this.keywords.some(kw => kw.text === text)) {
       return `关键词「${text}」已存在。`
     }
-    const newKeyword: KeywordConfig = { text, reply: '', imageIndex: 0 }
+    const newKeyword: KeywordConfig = { text, reply: '' }
     // 处理回复中的图片
-    const processedReply = await this.processReply(reply, newKeyword)
+    const processedReply = await this.processReply(reply)
     newKeyword.reply = processedReply
     this.keywords.push(newKeyword)
     await this.saveKeywords()
@@ -148,7 +151,7 @@ export class KeywordReplyService {
 
   /**
    * @method removeKeyword
-   * @description 删除一个关键词及其关联的图片。
+   * @description 删除一个关键词。
    * @param text 要删除的关键词
    * @returns 操作结果的提示信息。
    */
@@ -158,26 +161,15 @@ export class KeywordReplyService {
       return `未找到关键词「${text}」。`
     }
 
-    const [removed] = this.keywords.splice(index, 1)
+    this.keywords.splice(index, 1)
     await this.saveKeywords()
-
-    // 异步删除关联的本地图片文件
-    const elements = h.parse(removed.reply)
-    for (const el of elements) {
-      if (el.type === 'img' && el.attrs.src?.startsWith('file://')) {
-        const filePath = el.attrs.src.substring('file://'.length)
-        if (await fileExists(filePath)) {
-          await deleteFile(filePath)
-        }
-      }
-    }
 
     return `成功删除关键词「${text}」。`
   }
 
   /**
    * @method renameKeyword
-   * @description 重命名一个关键词，并同步重命名其关联的图片文件。
+   * @description 重命名一个关键词。
    * @param oldText 旧关键词
    * @param newText 新关键词
    * @returns 操作结果的提示信息。
@@ -192,36 +184,9 @@ export class KeywordReplyService {
       return `关键词「${newText}」已存在。`
     }
 
-    const elements = h.parse(keyword.reply)
-    let hasError = false
-
-    // 重命名关联的图片文件
-    for (const el of elements) {
-      if (el.type === 'img' && el.attrs.src?.startsWith('file://')) {
-        const oldPath = el.attrs.src.substring('file://'.length)
-        const oldFileName = parse(oldPath).base
-        const newFileName = oldFileName.replace(oldText, newText)
-        const newPath = join(this.keywordImagesPath, newFileName)
-
-        try {
-          if (await fileExists(oldPath)) {
-            await fs.rename(oldPath, newPath)
-            el.attrs.src = `file://${newPath}` // 更新回复内容中的图片路径
-          }
-        } catch (error) {
-          this.ctx.logger.error(`重命名关键词图片文件失败: ${oldPath} -> ${newPath}`, error)
-          hasError = true
-        }
-      }
-    }
-
     keyword.text = newText
-    keyword.reply = h.normalize(elements).join('')
     await this.saveKeywords()
 
-    if (hasError) {
-      return `成功重命名关键词「${oldText}」为「${newText}」，但部分图片资源重命名失败，请检查日志。`
-    }
     return `成功重命名关键词「${oldText}」为「${newText}」。`
   }
 
