@@ -67,10 +67,7 @@ export class FileRecordService {
   public async handleFile(fileElement: any, session: Session): Promise<void> {
     if (!this.isFileRecordAllowed(session.channelId)) return
     const fileInfo = await this._extractFileInfo(fileElement, session)
-    if (!fileInfo) {
-      this.ctx.logger.warn('无法从消息元素中获取有效的文件信息。')
-      return
-    }
+    if (!fileInfo) return
     await this._processAndRecordFile(fileInfo.name, fileInfo.size, fileInfo.url, session)
   }
 

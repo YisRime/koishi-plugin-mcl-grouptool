@@ -60,7 +60,7 @@ export class FileReplyService {
 
     // 如果在主要群组中检测到闪传消息，则进行提示并终止后续逻辑
     if (mainGroupIds.includes(channelId) && isFlashTransferMessage) {
-      await session.send(buildReplyElements(session, '请不要使用闪传发送文件，请直接上传文件到群中。', undefined, this.config));
+      await session.send(buildReplyElements(session, '请不要使用闪传发送文件，请直接上传文件到群中', undefined, this.config));
       return; // 结束处理，避免后续逻辑干扰
     }
 

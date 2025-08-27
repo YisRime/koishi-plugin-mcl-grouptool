@@ -38,7 +38,7 @@ export class ForwardingService {
    * @returns 包含所有关键词的字符串。
    */
   public listFwdKeywords(): string {
-    if (!this.fwdKeywords.length) return '当前没有配置任何转发关键词。'
+    if (!this.fwdKeywords.length) return '当前没有配置转发关键词'
     const keywordList = this.fwdKeywords.map(kw => kw.text).join(' | ')
     return `可用转发关键词列表：\n${keywordList}`
   }
@@ -51,11 +51,11 @@ export class ForwardingService {
    */
   public async addFwdKeyword(text: string): Promise<string> {
     if (this.fwdKeywords.some(kw => kw.text === text)) {
-      return `转发关键词「${text}」已存在。`
+      return `转发关键词「${text}」已存在`
     }
     this.fwdKeywords.push({ text })
     await this.saveFwdKeywords()
-    return `成功添加转发关键词「${text}」。`
+    return `成功添加转发关键词「${text}」`
   }
 
   /**
@@ -67,11 +67,11 @@ export class ForwardingService {
   public async removeFwdKeyword(text: string): Promise<string> {
     const index = this.fwdKeywords.findIndex(kw => kw.text === text)
     if (index === -1) {
-      return `未找到转发关键词「${text}」。`
+      return `未找到转发关键词「${text}」`
     }
     this.fwdKeywords.splice(index, 1)
     await this.saveFwdKeywords()
-    return `成功删除转发关键词「${text}」。`
+    return `成功删除转发关键词「${text}」`
   }
 
   /**
@@ -82,17 +82,17 @@ export class ForwardingService {
    * @returns 操作结果的提示信息。
    */
   public async renameFwdKeyword(oldText: string, newText: string): Promise<string> {
-    if (oldText === newText) return '新旧关键词不能相同。'
+    if (oldText === newText) return '新旧关键词不能相同'
     const keyword = this.fwdKeywords.find(kw => kw.text === oldText)
     if (!keyword) {
-      return `未找到转发关键词「${oldText}」。`
+      return `未找到转发关键词「${oldText}」`
     }
     if (this.fwdKeywords.some(kw => kw.text === newText)) {
-      return `转发关键词「${newText}」已存在。`
+      return `转发关键词「${newText}」已存在`
     }
     keyword.text = newText
     await this.saveFwdKeywords()
-    return `成功重命名转发关键词「${oldText}」为「${newText}」。`
+    return `成功重命名转发关键词「${oldText}」为「${newText}」`
   }
 
   /**
@@ -105,20 +105,20 @@ export class ForwardingService {
   public async toggleFwdKeywordRegex(text: string, regex?: string): Promise<string> {
     const keyword = this.fwdKeywords.find(kw => kw.text === text)
     if (!keyword) {
-      return `未找到转发关键词「${text}」。`
+      return `未找到转发关键词「${text}」`
     }
 
     if (regex) {
       keyword.regex = regex
       await this.saveFwdKeywords()
-      return `成功为转发关键词「${text}」设置了正则表达式。`
+      return `成功为转发关键词「${text}」设置了正则表达式`
     } else {
       if (!keyword.regex) {
-        return `转发关键词「${text}」没有配置正则表达式。`
+        return `转发关键词「${text}」没有配置正则表达式`
       }
       delete keyword.regex
       await this.saveFwdKeywords()
-      return `成功移除了转发关键词「${text}」的正则表达式。`
+      return `成功移除了转发关键词「${text}」的正则表达式`
     }
   }
 

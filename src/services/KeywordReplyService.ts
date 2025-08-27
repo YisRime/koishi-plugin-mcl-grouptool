@@ -88,7 +88,7 @@ export class KeywordReplyService {
     options: { recalled?: boolean } = {},
   ): Promise<string> {
     const kw = this.keywords.find(k => k.text === textKey)
-    if (!kw) return `未找到关键词「${textKey}」的配置。`
+    if (!kw) return `未找到关键词「${textKey}」的配置`
 
     const targetUserId = getTargetUserId(target)
     let replyString = kw.reply
@@ -114,7 +114,7 @@ export class KeywordReplyService {
       return '' // 执行成功，返回空字符串
     } catch (error) {
       this.ctx.logger.error('发送预设回复时发生错误:', error)
-      return '发送预设回复时发生内部错误，请检查控制台日志。'
+      return '发送预设回复时发生内部错误'
     }
   }
 
@@ -124,7 +124,7 @@ export class KeywordReplyService {
    * @returns 包含所有关键词的字符串。
    */
   public listKeywords(): string {
-    if (!this.keywords.length) return '当前没有配置任何回复关键词。'
+    if (!this.keywords.length) return '当前没有配置回复关键词'
     const keywordList = this.keywords.map(kw => kw.text).join(' | ')
     return `可用关键词列表：\n${keywordList}`
   }
@@ -138,7 +138,7 @@ export class KeywordReplyService {
    */
   public async addKeyword(text: string, reply: string): Promise<string> {
     if (this.keywords.some(kw => kw.text === text)) {
-      return `关键词「${text}」已存在。`
+      return `关键词「${text}」已存在`
     }
     const newKeyword: KeywordConfig = { text, reply: '' }
     // 处理回复中的图片
@@ -146,7 +146,7 @@ export class KeywordReplyService {
     newKeyword.reply = processedReply
     this.keywords.push(newKeyword)
     await this.saveKeywords()
-    return `成功添加关键词「${text}」。`
+    return `成功添加关键词「${text}」`
   }
 
   /**
@@ -158,13 +158,13 @@ export class KeywordReplyService {
   public async removeKeyword(text: string): Promise<string> {
     const index = this.keywords.findIndex(kw => kw.text === text)
     if (index === -1) {
-      return `未找到关键词「${text}」。`
+      return `未找到关键词「${text}」`
     }
 
     this.keywords.splice(index, 1)
     await this.saveKeywords()
 
-    return `成功删除关键词「${text}」。`
+    return `成功删除关键词「${text}」`
   }
 
   /**
@@ -175,19 +175,19 @@ export class KeywordReplyService {
    * @returns 操作结果的提示信息。
    */
   public async renameKeyword(oldText: string, newText: string): Promise<string> {
-    if (oldText === newText) return '新旧关键词不能相同。'
+    if (oldText === newText) return '新旧关键词不能相同'
     const keyword = this.keywords.find(kw => kw.text === oldText)
     if (!keyword) {
-      return `未找到关键词「${oldText}」。`
+      return `未找到关键词「${oldText}」`
     }
     if (this.keywords.some(kw => kw.text === newText)) {
-      return `关键词「${newText}」已存在。`
+      return `关键词「${newText}」已存在`
     }
 
     keyword.text = newText
     await this.saveKeywords()
 
-    return `成功重命名关键词「${oldText}」为「${newText}」。`
+    return `成功重命名关键词「${oldText}」为「${newText}」`
   }
 
   /**
@@ -199,17 +199,17 @@ export class KeywordReplyService {
    */
   public async toggleKeywordRegex(text: string, regex?: string): Promise<string> {
     const keyword = this.keywords.find(kw => kw.text === text)
-    if (!keyword) return `未找到关键词「${text}」。`
+    if (!keyword) return `未找到关键词「${text}」`
 
     if (regex) {
       keyword.regex = regex
       await this.saveKeywords()
-      return `成功为关键词「${text}」设置了正则表达式。`
+      return `成功为关键词「${text}」设置了正则表达式`
     } else {
-      if (!keyword.regex) return `关键词「${text}」没有配置正则表达式。`
+      if (!keyword.regex) return `关键词「${text}」没有配置正则表达式`
       delete keyword.regex
       await this.saveKeywords()
-      return `成功移除了关键词「${text}」的正则表达式。`
+      return `成功移除了关键词「${text}」的正则表达式`
     }
   }
 

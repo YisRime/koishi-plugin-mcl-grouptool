@@ -198,7 +198,7 @@ export class CurfewService {
   private async setGroupMute(groupId: string, mute: boolean): Promise<void> {
     const bot = this.ctx.bots.find(b => b.platform === 'onebot')
     if (!bot) {
-      this.ctx.logger.warn('未找到可用的 OneBot 实例。')
+      this.ctx.logger.warn('未找到可用的 OneBot 实例')
       return
     }
 
@@ -213,7 +213,7 @@ export class CurfewService {
           })
           this.newMemberDisposers.set(groupId, disposer)
         }
-        const notification = `宵禁时间到！时间已经不早了，解决问题请明早再来吧。`
+        const notification = `宵禁时间到！时间已经不早了，解决问题请明早再来吧`
         await bot.sendMessage(groupId, notification).catch(e => {
           this.ctx.logger.warn(`发送宵禁开始通知到群 ${groupId} 失败:`, e)
         })
